@@ -1,5 +1,7 @@
 package com.qiongge.callassistant.ui
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -72,6 +74,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -123,6 +126,8 @@ private val drawerEntries = listOf(
     DrawerEntry("数据管理", R.drawable.ic_storage),
     DrawerEntry("关于作者", R.drawable.ic_info),
 )
+
+private const val AUTHOR_EMAIL = "hjian9792@gmail.com"
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -423,6 +428,8 @@ fun AssistantApp(viewModel: MainViewModel) {
                 onClearAll = viewModel::clearAllLocalData,
                 onDismissMessage = viewModel::dismissDataMessage,
             )
+        } else if (entry == "关于作者") {
+            AboutAuthorDialog(onDismiss = { selectedDrawerEntry = null })
         } else {
             AlertDialog(
                 onDismissRequest = { selectedDrawerEntry = null },
@@ -442,6 +449,38 @@ fun AssistantApp(viewModel: MainViewModel) {
             )
         }
     }
+}
+
+@Composable
+private fun AboutAuthorDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("关于作者", style = MaterialTheme.typography.titleLarge) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("穷哥们电销助手，帮助整理客户名单和联系进度。")
+                Text("招聘与工作机会交流，欢迎发邮件联系作者。")
+                TextButton(
+                    onClick = {
+                        val emailIntent = Intent(
+                            Intent.ACTION_SENDTO,
+                            Uri.fromParts("mailto", AUTHOR_EMAIL, null),
+                        ).putExtra(Intent.EXTRA_SUBJECT, "工作机会交流")
+                        context.startActivity(emailIntent)
+                    },
+                ) {
+                    Text(AUTHOR_EMAIL)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.surface,
+    )
 }
 
 @Composable
