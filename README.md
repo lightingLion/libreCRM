@@ -8,6 +8,7 @@
 - 最低 Android 版本为 Android 9（API 28）；当前构建目标为 API 36。
 - 当前开发 applicationId 为 `com.qiongge.callassistant.dev`，仅作开发占位，正式包名待作者确认。
 - 霞鹜文楷提供 Regular 和 Medium 字体文件。上游 Lite 字体包没有 Bold 文件，标题使用真实 Medium 字重。
+- 作者联系邮箱：<hjian9792@gmail.com>。
 
 ## 已实现功能
 
@@ -33,11 +34,30 @@ APK 输出位置：
 - Debug：`app/build/outputs/apk/debug/app-arm64-v8a-debug.apk`
 - Release：`app/build/outputs/apk/release/app-arm64-v8a-release.apk`
 
-Release 构建开启 R8 混淆与资源收缩。当前 release variant 使用 Android 调试密钥签名，便于开发验收与侧载，不是可用于商店发布的生产签名包。正式发布前，作者需要提供并安全保管正式签名密钥与凭据，并确认正式 applicationId、项目许可证、GitHub 仓库地址、作者联系邮箱和正式图标。不得复用或公开调试密钥作为生产凭证。
+Release 构建开启 R8 混淆与资源收缩。当前 release variant 使用 Android 调试密钥签名，便于开发验收与侧载，不是可用于商店发布的生产签名包。正式发布前，作者需要提供并安全保管正式签名密钥与凭据，并确认正式 applicationId、项目许可证和正式图标。作者联系邮箱为 `hjian9792@gmail.com`，代码仓库地址为 [github.com/lightingLion/libreCRM](https://github.com/lightingLion/libreCRM)。不得复用或公开调试密钥作为生产凭证。
 
 ## 开源与第三方许可
 
 项目自身许可证尚待作者确认，因此仓库暂不声明项目代码采用某一开源许可证。第三方组件及随包资源的许可说明见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)；完整许可文本保存在 `app/src/main/assets/licenses/`。项目自身许可证确定后，应在仓库根目录补充对应的 `LICENSE` 文件。
+
+### 开源项目与技术
+
+下表仅列出当前版本实际采用的开源项目。项目自身许可证与第三方项目的许可证相互独立。
+
+| 开源项目 | 主要用途 | 使用状态 | 项目地址 |
+| --- | --- | --- | --- |
+| Kotlin | Android 开发语言 | 已使用 | [JetBrains/Kotlin](https://github.com/JetBrains/kotlin) |
+| Jetpack Compose | 原生 UI 与页面布局 | 已使用 | [AndroidX](https://github.com/androidx/androidx) |
+| Material 3 | UI 组件与主题设计 | 已使用 | [AndroidX](https://github.com/androidx/androidx) |
+| Compose Foundation | 布局、滚动与列表交互 | 已使用 | [AndroidX](https://github.com/androidx/androidx) |
+| Compose Animation | 弹簧动画与页面过渡 | 已使用 | [AndroidX](https://github.com/androidx/androidx) |
+| Room | SQLite 本地数据库 | 已使用 | [AndroidX](https://github.com/androidx/androidx) |
+| DataStore | 用户设置与导入字段映射模板 | 已使用 | [AndroidX](https://github.com/androidx/androidx) |
+| PaddleOCR（PP-OCRv6 Small） | 离线中文 OCR 与文字坐标识别 | 已使用，模型随应用打包 | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) |
+| SLANet_plus | 表格结构识别与行列匹配 | 已使用，模型随应用打包 | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) |
+| OpenCV | 图像预处理与表格线提取 | 已使用 | [OpenCV](https://github.com/opencv/opencv) |
+| 霞鹜文楷（LXGW WenKai Lite） | 中文字体 | 已使用，包含 Regular 与 Medium | [LXGW WenKai](https://github.com/lxgw/LxgwWenKai) |
+| 自研字段匹配引擎 | 导入字段匹配与映射 | 已使用，属于本项目代码 | — |
 
 ## 阶段边界
 
