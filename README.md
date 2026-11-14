@@ -47,6 +47,10 @@ APK 输出位置：
 - 作者邮箱：[hjian9792@gmail.com](mailto:hjian9792@gmail.com)
 - GitHub：[lightingLion/libreCRM](https://github.com/lightingLion/libreCRM)
 
+## 许可证
+
+本项目采用 [GNU General Public License v3.0（GPL-3.0）](LICENSE)。
+
 ## 第三方许可
 
 第三方组件、模型与字体的许可信息见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)，完整许可文本位于 `app/src/main/assets/licenses/`。
