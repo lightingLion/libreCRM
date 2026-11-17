@@ -47,20 +47,24 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.FileProvider
 import com.qiongge.callassistant.data.local.entity.CustomerEntity
 import com.qiongge.callassistant.data.local.entity.ImportDraftImageEntity
 import com.qiongge.callassistant.data.local.entity.ImportDraftRowEntity
 import com.qiongge.callassistant.data.local.entity.ImportSkipReason
+import com.qiongge.callassistant.data.repository.ImportDraftRules
 import com.qiongge.callassistant.domain.importing.PhoneRecognition
 import com.qiongge.callassistant.ocr.layout.OcrSourceCellCodec
 import com.qiongge.callassistant.ui.MainUiState
 import com.qiongge.callassistant.ui.components.CardMotionProfile
 import com.qiongge.callassistant.ui.components.EditorialButton
 import com.qiongge.callassistant.ui.components.InsetPill
+import com.qiongge.callassistant.ui.components.InsetSurface
 import com.qiongge.callassistant.ui.components.RaisedCard
 import com.qiongge.callassistant.ui.theme.G2CornerShape
+import com.qiongge.callassistant.ui.theme.NumberTypography
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -68,7 +72,6 @@ import kotlinx.coroutines.withContext
 @Composable
 fun ImportListPage(
     state: MainUiState,
-    onTasksClick: () -> Unit,
     onAddImages: (List<Uri>, List<File>) -> Unit,
     onAddTabularFile: (Uri) -> Unit,
     onUpdateTitle: (String) -> Unit,
@@ -92,7 +95,6 @@ fun ImportListPage(
     var fieldMappingImage by remember { mutableStateOf<ImportDraftImageEntity?>(null) }
     var fieldMappingFileName by remember { mutableStateOf<String?>(null) }
     var showDiscardConfirmation by remember { mutableStateOf(false) }
-    var showImportConfirmation by remember { mutableStateOf(false) }
     var localMessage by remember { mutableStateOf<String?>(null) }
 
     val imagePicker = rememberLauncherForActivityResult(
@@ -132,6 +134,19 @@ fun ImportListPage(
     var title by remember(snapshot?.draft?.id) { mutableStateOf(snapshot?.draft?.title.orEmpty()) }
     var showActiveRows by remember(snapshot?.draft?.id) { mutableStateOf(false) }
     var showSkippedRows by remember(snapshot?.draft?.id) { mutableStateOf(false) }
+    val customersByPhone = remember(state.allCustomers) {
+        state.allCustomers.mapNotNull { customer ->
+            PhoneRecognition.comparableDigits(customer.phone)?.let { it to customer }
+        }.groupBy({ it.first }, { it.second })
+    }
+    val activeRows = remember(snapshot?.rows) { snapshot?.rows.orEmpty().filterNot(ImportDraftRowEntity::skipped) }
+    val skippedRows = remember(snapshot?.rows) { snapshot?.rows.orEmpty().filter(ImportDraftRowEntity::skipped) }
+    val reusedCount = remember(activeRows, customersByPhone) {
+        activeRows.count { row ->
+            row.duplicateMode != LocalOcrImportMode.CREATE_NEW &&
+                PhoneRecognition.comparableDigits(row.phone)?.let(customersByPhone::containsKey) == true
+        }
+    }
     LazyColumn(
         modifier = modifier,
         contentPadding = PaddingValues(start = 20.dp, top = 16.dp, end = 20.dp, bottom = 28.dp),
@@ -142,10 +157,21 @@ fun ImportListPage(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("导入名单", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Medium)
                 Text(
-                    "导入图片、CSV 或 Excel；空字段行自动跳过，可按需抽查，统一确认后写入客户资料。",
+                    "导入图片、CSV 或 Excel；缺项、无效和重复号码自动跳过，导入后即可开始联系。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+
+        state.importMessage?.let { message ->
+            item(key = "import-message") {
+                InsetSurface(modifier = Modifier.fillMaxWidth()) {
+                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(message, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = onDismissMessage) { Text("关闭") }
+                    }
+                }
             }
         }
 
@@ -154,18 +180,13 @@ fun ImportListPage(
                 RaisedCard(modifier = Modifier.fillMaxWidth(), motionProfile = CardMotionProfile.Large) {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("本机图片识别", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                            Text("选择名单", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                             InsetPill("完全离线")
                         }
                         Text(
-                            "内置 PP-OCRv6 small 识别文字坐标，再用 SLANet_plus 匹配表格行列和单元格；骁龙机型优先尝试 Qualcomm NNAPI，无法运行时回退 CPU。",
+                            "选择名单照片，或导入 CSV、Excel 文件。客户信息只保存在本机。",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            "较大模型下载和切换留在后续设置阶段。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary,
                         )
                         EditorialButton(
                             label = "从相册选择图片",
@@ -199,17 +220,7 @@ fun ImportListPage(
                 }
             }
             item(key = "import-privacy") {
-                RaisedCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("资料留在本机", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "照片保存在应用私有目录。识别结果不会自动生成任务；确认导入后才创建客户和名单。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        EditorialButton("前往已有任务", onTasksClick, modifier = Modifier.fillMaxWidth())
-                    }
-                }
+                Text("导入前可查看识别结果，点击导入后才创建客户和名单。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else {
             item(key = "draft-title") {
@@ -229,15 +240,20 @@ fun ImportListPage(
                             label = { Text("名单名称") },
                             singleLine = true,
                         )
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            ImportCount("待导入", activeRows.size, Modifier.weight(1f))
+                            ImportCount("已跳过", skippedRows.size, Modifier.weight(1f))
+                        }
                         Text(
-                            "${snapshot.images.size}/$MAX_IMAGES 张图片 · ${snapshot.rows.count { !it.skipped }} 条待导入 · ${snapshot.rows.count { it.skipped }} 条自动跳过",
+                            "缺项、无效和重复号码自动跳过；$reusedCount 条将关联已有客户。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Text(
-                            "姓名或手机号任一项为空就自动跳过；信息完整的行无需逐条点确认，最后统一确认导入。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary,
+                        EditorialButton(
+                            label = if (state.isImportCommitting) "正在保存…" else "导入并开始联系",
+                            onClick = onCommitDraft,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !state.isOcrProcessing && !state.isImportCommitting && activeRows.isNotEmpty(),
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             OutlinedButton(
@@ -252,7 +268,7 @@ fun ImportListPage(
                             ) { Text("拍照") }
                         }
                         OutlinedButton(
-                            onClick = onAddManualRow,
+                            onClick = { showActiveRows = true; onAddManualRow() },
                             modifier = Modifier.fillMaxWidth(),
                             enabled = !state.isOcrProcessing && !state.isImportCommitting,
                         ) { Text("手动补一位客户") }
@@ -349,14 +365,12 @@ fun ImportListPage(
                     }
                 }
             } else {
-                val activeRows = snapshot.rows.filterNot(ImportDraftRowEntity::skipped)
-                val skippedRows = snapshot.rows.filter(ImportDraftRowEntity::skipped)
                 item(key = "active-rows-toggle") {
                     RaisedCard(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(16.dp)) {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("${activeRows.size} 条未跳过记录，可批量导入", style = MaterialTheme.typography.titleSmall)
                             Text(
-                                "后续重复手机号和姓名或手机号缺项的行会自动跳过；需要抽查时再展开记录，最后统一确认导入。",
+                                "缺项、无效和后续重复号码已跳过。$reusedCount 条将关联已有客户，保留原有资料和联系记录。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -375,9 +389,7 @@ fun ImportListPage(
                         val samePhoneCount = if (currentPhone == null) 0 else snapshot.rows.count {
                             !it.skipped && PhoneRecognition.comparableDigits(it.phone) == currentPhone
                         }
-                        val matches = if (currentPhone == null) emptyList() else state.allCustomers.filter {
-                            PhoneRecognition.comparableDigits(it.phone) == currentPhone
-                        }
+                        val matches = currentPhone?.let(customersByPhone::get).orEmpty()
                         ImportReviewRowCard(
                             row = row,
                             samePhoneCount = samePhoneCount,
@@ -412,16 +424,6 @@ fun ImportListPage(
                 }
             }
 
-            state.importMessage?.let { message ->
-                item(key = "import-message") {
-                    RaisedCard(modifier = Modifier.fillMaxWidth()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
-                            TextButton(onClick = onDismissMessage, modifier = Modifier.align(Alignment.End)) { Text("关闭") }
-                        }
-                    }
-                }
-            }
             localMessage?.let { message ->
                 item(key = "local-message") {
                     RaisedCard(modifier = Modifier.fillMaxWidth()) {
@@ -435,17 +437,6 @@ fun ImportListPage(
 
             item(key = "draft-actions") {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        "只有未跳过、姓名和有效手机号完整的行会导入。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    EditorialButton(
-                        label = if (state.isImportCommitting) "正在保存…" else "确认导入名单",
-                        onClick = { showImportConfirmation = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !state.isOcrProcessing && !state.isImportCommitting && snapshot.rows.any { !it.skipped },
-                    )
                     TextButton(
                         onClick = { showDiscardConfirmation = true },
                         modifier = Modifier.fillMaxWidth(),
@@ -503,19 +494,15 @@ fun ImportListPage(
             dismissButton = { TextButton(onClick = { showDiscardConfirmation = false }) { Text("取消") } },
         )
     }
-    if (showImportConfirmation) {
-        AlertDialog(
-            onDismissRequest = { showImportConfirmation = false },
-            title = { Text("确认创建名单？") },
-            text = { Text("将统一导入姓名和有效手机号完整的行。空字段行已自动跳过，不需要逐条确认。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showImportConfirmation = false
-                    onCommitDraft()
-                }) { Text("确认导入") }
-            },
-            dismissButton = { TextButton(onClick = { showImportConfirmation = false }) { Text("继续核对") } },
-        )
+}
+
+@Composable
+private fun ImportCount(label: String, count: Int, modifier: Modifier = Modifier) {
+    InsetSurface(modifier = modifier) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Text(count.toString(), style = NumberTypography.copy(fontSize = 22.sp, lineHeight = 28.sp))
+            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -589,6 +576,7 @@ private fun ImportReviewRowCard(
 ) {
     var name by remember(row.id) { mutableStateOf(row.name) }
     var phone by remember(row.id) { mutableStateOf(row.phone) }
+    var editingSkipped by remember(row.id) { mutableStateOf(false) }
     val hasPendingEdits = name != row.name || phone != row.phone
 
     RaisedCard(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(16.dp)) {
@@ -605,25 +593,43 @@ private fun ImportReviewRowCard(
                 val skipDescription = when (row.skipReason) {
                     ImportSkipReason.DUPLICATE_PHONE -> "手机号与前面行重复，后续行默认自动跳过。"
                     ImportSkipReason.INCOMPLETE -> "姓名或手机号为空，此行已自动跳过。"
+                    ImportSkipReason.INVALID_PHONE -> "手机号格式无效，此行已自动跳过。"
                     else -> "此行已跳过，不会导入。"
                 }
-                Text(skipDescription, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
+                Text(skipDescription, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
                 OutlinedButton(
                     onClick = {
-                        onUpdate(
-                            row.copy(
-                                skipped = false,
-                                reviewed = false,
-                                duplicateMode = if (duplicatePhoneSkipped) LocalOcrImportMode.CREATE_NEW else null,
-                                duplicateCustomerId = null,
-                                skipReason = null,
-                            ),
-                        )
+                        if (row.skipReason == ImportSkipReason.INCOMPLETE || row.skipReason == ImportSkipReason.INVALID_PHONE) {
+                            editingSkipped = !editingSkipped
+                        } else {
+                            onUpdate(
+                                row.copy(
+                                    skipped = false,
+                                    reviewed = false,
+                                    duplicateMode = if (duplicatePhoneSkipped) LocalOcrImportMode.CREATE_NEW else null,
+                                    duplicateCustomerId = null,
+                                    skipReason = null,
+                                ),
+                            )
+                        }
                     },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = enabled,
-                ) { Text(if (duplicatePhoneSkipped) "恢复为独立客户" else "恢复此行") }
-            } else {
+                ) {
+                    Text(
+                        when {
+                            duplicatePhoneSkipped -> "恢复为独立客户"
+                            row.skipReason == ImportSkipReason.INCOMPLETE || row.skipReason == ImportSkipReason.INVALID_PHONE ->
+                                if (editingSkipped) "收起修改" else "修改此行"
+                            else -> "恢复此行"
+                        },
+                    )
+                }
+                if (editingSkipped) {
+                    Text("补全有效信息后自动恢复此行。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (!row.skipped || editingSkipped) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = {
@@ -659,6 +665,7 @@ private fun ImportReviewRowCard(
                 InsetPill(
                     when {
                         hasPendingEdits -> "正在保存修改…"
+                        row.skipped -> "此行暂未导入"
                         valid -> "姓名和手机号完整，可直接导入"
                         else -> "姓名与有效手机号需补全"
                     },
@@ -668,11 +675,12 @@ private fun ImportReviewRowCard(
                     Text(
                         "草稿中还有相同号码；同一已有客户不能重复加入同一名单，重复行请选独立客户或跳过。",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 }
                 if (matchingCustomers.isNotEmpty()) {
-                    Text("已有线索使用这个号码，请明确选择：", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                    val automaticMatch = ImportDraftRules.selectExistingCustomer(row, matchingCustomers)
+                    Text("将自动关联已有客户并保留原有资料，可按需更改：", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     FilterChip(
                         selected = row.duplicateMode == LocalOcrImportMode.CREATE_NEW,
                         onClick = {
@@ -681,9 +689,11 @@ private fun ImportReviewRowCard(
                         enabled = enabled && !hasPendingEdits,
                         label = { Text("新建独立客户") },
                     )
-                    matchingCustomers.take(MAX_DUPLICATE_CHOICES).forEach { customer ->
+                    matchingCustomers.sortedWith(
+                        compareBy<CustomerEntity> { it.id != automaticMatch?.id }.thenBy { it.id },
+                    ).take(MAX_DUPLICATE_CHOICES).forEach { customer ->
                         FilterChip(
-                            selected = row.duplicateMode == LocalOcrImportMode.REUSE_EXISTING && row.duplicateCustomerId == customer.id,
+                            selected = row.duplicateMode != LocalOcrImportMode.CREATE_NEW && automaticMatch?.id == customer.id,
                             onClick = {
                                 onUpdate(
                                     row.copy(
@@ -697,7 +707,7 @@ private fun ImportReviewRowCard(
                         )
                     }
                 } else if (samePhoneCount > 1) {
-                    Text("这份草稿中也有相同号码。要保留本行，请选为独立客户；否则跳过。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                    Text("这份草稿中也有相同号码。要保留本行，请选为独立客户；否则跳过。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     FilterChip(
                         selected = row.duplicateMode == LocalOcrImportMode.CREATE_NEW,
                         onClick = { onUpdate(row.copy(duplicateMode = LocalOcrImportMode.CREATE_NEW, duplicateCustomerId = null)) },
@@ -706,22 +716,24 @@ private fun ImportReviewRowCard(
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TextButton(
-                        onClick = {
-                            onUpdate(
-                                row.copy(
-                                    name = name,
-                                    phone = phone,
-                                    skipped = true,
-                                    reviewed = false,
-                                    duplicateMode = null,
-                                    duplicateCustomerId = null,
-                                    skipReason = ImportSkipReason.MANUAL,
-                                ),
-                            )
-                        },
-                        enabled = enabled && !hasPendingEdits,
-                    ) { Text("跳过此行") }
+                    if (!row.skipped) {
+                        TextButton(
+                            onClick = {
+                                onUpdate(
+                                    row.copy(
+                                        name = name,
+                                        phone = phone,
+                                        skipped = true,
+                                        reviewed = false,
+                                        duplicateMode = null,
+                                        duplicateCustomerId = null,
+                                        skipReason = ImportSkipReason.MANUAL,
+                                    ),
+                                )
+                            },
+                            enabled = enabled && !hasPendingEdits,
+                        ) { Text("跳过此行") }
+                    }
                     TextButton(onClick = onDelete, enabled = enabled) { Text("删除") }
                 }
             }

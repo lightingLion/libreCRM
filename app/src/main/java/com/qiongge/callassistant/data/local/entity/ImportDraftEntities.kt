@@ -81,6 +81,7 @@ data class ImportDraftRowEntity(
 
 object ImportSkipReason {
     const val INCOMPLETE = "INCOMPLETE"
+    const val INVALID_PHONE = "INVALID_PHONE"
     const val MANUAL = "MANUAL"
     const val DUPLICATE_PHONE = "DUPLICATE_PHONE"
 }

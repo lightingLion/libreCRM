@@ -104,7 +104,7 @@ fun RaisedCard(
                 alpha = 0.92f + 0.08f * progress
             }
             .shadow(
-                elevation = 3.dp,
+                elevation = 1.5.dp,
                 shape = shape,
                 ambientColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
                 spotColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
@@ -112,7 +112,7 @@ fun RaisedCard(
         shape = shape,
         color = MaterialTheme.colorScheme.surface,
         contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(1.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.92f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.92f)),
         tonalElevation = 0.dp,
     ) {
         Box(
@@ -136,7 +136,7 @@ fun InsetSurface(
         shape = shape,
         color = color,
         contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.76f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.76f)),
         tonalElevation = 0.dp,
     ) {
         Box(content = content)

@@ -48,6 +48,12 @@ data class TabularImportResult(
     val skippedRowCount: Int,
 )
 
+data class ImportCommitResult(
+    val listId: Long,
+    val firstCustomerId: Long,
+    val firstMembershipId: Long,
+)
+
 class LocalOcrImportRepository(
     context: Context,
     private val database: AppDatabase,
@@ -219,7 +225,7 @@ class LocalOcrImportRepository(
             dao.updateRow(normalized)
             dao.getDraft()?.let { dao.updateDraft(it.copy(updatedAt = System.currentTimeMillis())) }
         }
-        reEvaluateDuplicatePhoneSkips()
+        reEvaluateDuplicatePhoneSkips(editingRowId = normalized.id.takeUnless { normalized.skipped })
     }
 
     suspend fun applyFieldMapping(imageId: Long, nameColumn: Int, phoneColumn: Int): Int = withContext(Dispatchers.IO) {
@@ -328,59 +334,30 @@ class LocalOcrImportRepository(
         Unit
     }
 
-    suspend fun commitDraft(): Long = withContext(Dispatchers.IO) {
+    suspend fun commitDraft(): ImportCommitResult = withContext(Dispatchers.IO) {
         reEvaluateDuplicatePhoneSkips()
         val draft = dao.getDraft() ?: throw ImportWorkflowException("没有待确认的导入草稿。")
         if (draft.title.isBlank()) throw ImportWorkflowException("请先填写名单名称。")
         val allRows = dao.getRows()
         val includedRows = allRows.filterNot(ImportDraftRowEntity::skipped)
-            .filter { it.name.isNotBlank() && it.phone.isNotBlank() }
-        if (includedRows.isEmpty()) throw ImportWorkflowException("请至少保留一位客户再导入。")
-        if (includedRows.any { !PhoneRecognition.isMainlandMobile(it.phone) }) {
-            throw ImportWorkflowException("请修正仍保留行中的无效手机号，空姓名或手机号的行会自动跳过。")
-        }
+        if (includedRows.isEmpty()) throw ImportWorkflowException("没有可导入的客户：缺项、无效或重复号码已跳过。")
 
-        val customersByPhone = customerDao.getAllOnce()
-            .mapNotNull { customer -> PhoneRecognition.comparableDigits(customer.phone)?.let { it to customer } }
-            .groupBy({ it.first }, { it.second })
-        val draftPhoneCounts = includedRows
-            .mapNotNull { row -> PhoneRecognition.comparableDigits(row.phone)?.let { it to row } }
-            .groupingBy { it.first }
-            .eachCount()
-        val explicitlyIndependentPhones = includedRows
-            .filter { it.duplicateMode == CREATE_NEW }
-            .mapNotNull { PhoneRecognition.comparableDigits(it.phone) }
-            .toSet()
-        val listId = database.withTransaction {
+        val result = database.withTransaction {
+            val customersByPhone = customerDao.getAllOnce()
+                .mapNotNull { customer -> PhoneRecognition.comparableDigits(customer.phone)?.let { it to customer } }
+                .groupBy({ it.first }, { it.second })
             val now = System.currentTimeMillis()
             val newListId = taskDao.insertList(CustomerListEntity(title = draft.title.trim(), createdAt = now, updatedAt = now))
             var nextOrder = 0
             val linkedCustomerIds = mutableSetOf<Long>()
+            var firstCustomerId: Long? = null
+            var firstMembershipId: Long? = null
             includedRows.forEach { row ->
                 val normalizedPhone = PhoneRecognition.comparableDigits(row.phone)
                     ?: throw ImportWorkflowException("名单中存在无效手机号。")
                 val matches = customersByPhone[normalizedPhone].orEmpty()
-                if (draftPhoneCounts[normalizedPhone].orZero() > 1 &&
-                    normalizedPhone !in explicitlyIndependentPhones && row.duplicateMode == null
-                ) {
-                    throw ImportWorkflowException("草稿中有相同号码，请明确选择保留重复行，或恢复为独立客户。")
-                }
                 val customerId = when {
-                    matches.isEmpty() -> {
-                        if (row.duplicateMode == REUSE_EXISTING) {
-                            throw ImportWorkflowException("所选的已有线索已不存在，请重新核对重复项。")
-                        }
-                        customerDao.insert(
-                            CustomerEntity(
-                                name = row.name.trim(),
-                                phone = normalizedPhone,
-                                status = ContactStatus.NOT_CONTACTED,
-                                createdAt = now,
-                                updatedAt = now,
-                            ),
-                        )
-                    }
-                    row.duplicateMode == CREATE_NEW -> customerDao.insert(
+                    matches.isEmpty() || row.duplicateMode == CREATE_NEW -> customerDao.insert(
                         CustomerEntity(
                             name = row.name.trim(),
                             phone = normalizedPhone,
@@ -389,12 +366,7 @@ class LocalOcrImportRepository(
                             updatedAt = now,
                         ),
                     )
-                    row.duplicateMode == REUSE_EXISTING -> {
-                        val selected = matches.firstOrNull { it.id == row.duplicateCustomerId }
-                            ?: throw ImportWorkflowException("所选的已有线索与号码不匹配，请重新核对。")
-                        selected.id
-                    }
-                    else -> throw ImportWorkflowException("发现已有相同号码，请选择关联已有线索或新建独立客户。")
+                    else -> requireNotNull(ImportDraftRules.selectExistingCustomer(row, matches)).id
                 }
                 if (!linkedCustomerIds.add(customerId)) {
                     throw ImportWorkflowException("同一已有客户被重复加入名单，请跳过重复行后再导入。")
@@ -404,6 +376,8 @@ class LocalOcrImportRepository(
                 )
                 if (nextOrder == 1) {
                     taskDao.saveProgress(TaskProgressEntity(listId = newListId, currentMembershipId = membershipId, updatedAt = now))
+                    firstCustomerId = customerId
+                    firstMembershipId = membershipId
                 }
             }
             taskDao.insertImportRecord(
@@ -416,69 +390,15 @@ class LocalOcrImportRepository(
                 ),
             )
             dao.deleteDraft()
-            newListId
+            ImportCommitResult(newListId, requireNotNull(firstCustomerId), requireNotNull(firstMembershipId))
         }
         draftDirectory.deleteRecursively()
-        listId
+        result
     }
 
-    private suspend fun reEvaluateDuplicatePhoneSkips(): List<ImportDraftRowEntity> {
-        val seenPhones = mutableSetOf<String>()
+    private suspend fun reEvaluateDuplicatePhoneSkips(editingRowId: Long? = null): List<ImportDraftRowEntity> {
         val rows = dao.getRows()
-        val refreshedRows = rows.map { row ->
-            val complete = row.name.isNotBlank() && row.phone.isNotBlank()
-            val previousReason = when {
-                row.skipReason != null -> row.skipReason
-                row.skipped && complete -> ImportSkipReason.MANUAL
-                row.skipped -> ImportSkipReason.INCOMPLETE
-                else -> null
-            }
-
-            when {
-                previousReason == ImportSkipReason.MANUAL -> row.copy(
-                    skipped = true,
-                    skipReason = ImportSkipReason.MANUAL,
-                )
-
-                !complete -> when {
-                    previousReason == ImportSkipReason.DUPLICATE_PHONE ||
-                        previousReason == ImportSkipReason.INCOMPLETE -> row.copy(
-                        skipped = true,
-                        duplicateMode = null,
-                        duplicateCustomerId = null,
-                        skipReason = ImportSkipReason.INCOMPLETE,
-                    )
-
-                    row.skipped -> row.copy(skipReason = ImportSkipReason.INCOMPLETE)
-                    else -> row.copy(skipped = false, skipReason = null)
-                }
-
-                else -> {
-                    val phone = PhoneRecognition.comparableDigits(row.phone)
-                    when {
-                        phone == null && (previousReason == ImportSkipReason.DUPLICATE_PHONE ||
-                            previousReason == ImportSkipReason.INCOMPLETE
-                        ) -> row.copy(skipped = false, skipReason = null)
-
-                        phone == null -> row
-
-                        row.duplicateMode == CREATE_NEW && !row.skipped -> {
-                            seenPhones += phone
-                            row.copy(skipped = false, skipReason = null)
-                        }
-
-                        seenPhones.add(phone) -> row.copy(skipped = false, skipReason = null)
-
-                        else -> row.copy(
-                            skipped = true,
-                            duplicateMode = null,
-                            duplicateCustomerId = null,
-                            skipReason = ImportSkipReason.DUPLICATE_PHONE,
-                        )
-                    }
-                }
-            }
-        }
+        val refreshedRows = ImportDraftRules.evaluate(rows, editingRowId)
 
         database.withTransaction {
             refreshedRows.filterIndexed { index, row -> row != rows[index] }.forEach { dao.updateRow(it) }
@@ -575,7 +495,5 @@ private fun isFieldHeader(value: String): Boolean {
         "tel",
     )
 }
-
-private fun Int?.orZero(): Int = this ?: 0
 
 class ImportWorkflowException(message: String) : Exception(message)

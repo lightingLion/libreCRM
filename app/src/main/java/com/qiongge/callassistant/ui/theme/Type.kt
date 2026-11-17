@@ -29,8 +29,8 @@ val AssistantTypography = BaseTypography.copy(
     bodyMedium = BaseTypography.bodyMedium.wenkai(FontWeight.Normal),
     bodySmall = BaseTypography.bodySmall.wenkai(FontWeight.Normal).copy(fontSize = 14.sp, lineHeight = 20.sp),
     labelLarge = BaseTypography.labelLarge.wenkai(FontWeight.Medium),
-    labelMedium = BaseTypography.labelMedium.wenkai(FontWeight.Medium),
-    labelSmall = BaseTypography.labelSmall.wenkai(FontWeight.Medium),
+    labelMedium = BaseTypography.labelMedium.wenkai(FontWeight.Medium).copy(fontSize = 13.sp, lineHeight = 18.sp),
+    labelSmall = BaseTypography.labelSmall.wenkai(FontWeight.Medium).copy(fontSize = 13.sp, lineHeight = 18.sp),
 )
 
 private fun TextStyle.wenkai(weight: FontWeight): TextStyle =

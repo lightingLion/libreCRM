@@ -1,6 +1,7 @@
 package com.qiongge.callassistant.ui.theme
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 
 /**
  * The only application color literals. Values are taken from 开发文档.md.
@@ -19,4 +20,8 @@ object AppColors {
     val rule = Color(0xFFD7D0C3)
     val pale = Color(0xFFE6DFD1)
     val white = Color(0xFFFBF8F1)
+
+    // Darken existing PRD tokens for readable small text on paper surfaces.
+    val mutedText = lerp(muted, ink, 0.20f)
+    val oxideText = lerp(oxide, ink, 0.30f)
 }

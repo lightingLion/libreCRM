@@ -11,6 +11,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -29,7 +30,12 @@ import androidx.compose.foundation.rememberOverscrollEffect
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -51,6 +57,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -65,6 +73,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -72,6 +81,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import com.qiongge.callassistant.data.local.entity.CallRecordEntity
+import com.qiongge.callassistant.R
 import com.qiongge.callassistant.data.local.entity.ContactStatus
 import com.qiongge.callassistant.data.local.entity.CustomerEntity
 import com.qiongge.callassistant.data.local.entity.CustomerListEntity
@@ -89,6 +99,7 @@ import com.qiongge.callassistant.ui.theme.NumberTypography
 fun TasksPage(
     tasks: List<TaskSummary>,
     onCreateTask: (String) -> Unit,
+    onImportClick: () -> Unit,
     onOpenTask: (Long) -> Unit,
     onContinueTask: (Long, Long, Long) -> Unit,
     onRenameTask: (CustomerListEntity, String) -> Unit,
@@ -122,18 +133,22 @@ fun TasksPage(
             item(key = "empty") {
                 EmptyStateCard(
                     title = "还没有任务名单",
-                    body = "先手动建一份名单，再录入客户和电话号码。",
-                    action = "新建任务名单",
-                    onAction = { showCreateDialog = true },
+                    body = "导入已有名单，或手动新建名单并添加客户。",
+                    action = "导入名单",
+                    onAction = onImportClick,
                 )
+            }
+            item(key = "create-empty") {
+                TextButton(onClick = { showCreateDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("手动新建名单")
+                }
             }
         } else {
             item(key = "create") {
-                EditorialButton(
-                    label = "新建任务名单",
-                    onClick = { showCreateDialog = true },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("${tasks.size} 份名单", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                    TextButton(onClick = { showCreateDialog = true }) { Text("新建名单") }
+                }
             }
             items(tasks, key = { it.task.id }) { summary ->
                 TaskSummaryCard(
@@ -226,24 +241,42 @@ private fun TaskSummaryCard(
     onDialSettings: () -> Unit,
 ) {
     val remaining = (summary.customerCount - summary.contactedCount).coerceAtLeast(0)
+    val hasProgress = summary.currentMembershipId != null && summary.currentCustomerId != null
+    var showMenu by remember { mutableStateOf(false) }
     RaisedCard(
         modifier = Modifier.fillMaxWidth(),
         motionProfile = CardMotionProfile.Large,
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.Top) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(summary.task.title, style = MaterialTheme.typography.titleLarge)
+                    Text(summary.task.title, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(
-                        "名单里有 ${summary.customerCount} 位客户，已记录 ${summary.contactedCount} 位的联系状态。",
+                        "${summary.customerCount} 位客户 · 已记录 ${summary.contactedCount} 位",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp),
                     )
                 }
-                if (summary.currentMembershipId != null) {
-                    InsetPill(text = "有进行中的进度")
+                Box {
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(painterResource(R.drawable.ic_more), contentDescription = "名单更多操作")
+                    }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        DropdownMenuItem(text = { Text("查看名单") }, onClick = { showMenu = false; onOpen() })
+                        DropdownMenuItem(text = { Text("自动拨号设置") }, onClick = { showMenu = false; onDialSettings() })
+                        DropdownMenuItem(text = { Text("重命名") }, onClick = { showMenu = false; onRename() })
+                        DropdownMenuItem(text = { Text("删除名单", color = MaterialTheme.colorScheme.error) }, onClick = { showMenu = false; onDelete() })
+                    }
                 }
+            }
+            if (summary.customerCount > 0 && summary.contactedCount > 0) {
+                LinearProgressIndicator(
+                    progress = { (summary.contactedCount.toFloat() / summary.customerCount).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(6.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                )
             }
             Text(
                 text = if (remaining > 0) "还剩 $remaining 位待跟进" else if (summary.customerCount == 0) "名单还是空的" else "名单客户均已记录联系状态",
@@ -251,26 +284,20 @@ private fun TaskSummaryCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             EditorialButton(
-                label = if (summary.currentMembershipId != null && summary.currentCustomerId != null) {
+                label = if (hasProgress) {
                     "继续联系"
                 } else {
                     "打开名单"
                 },
-                onClick = if (summary.currentMembershipId != null && summary.currentCustomerId != null) {
+                onClick = if (hasProgress) {
                     onContinue
                 } else {
                     onOpen
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = onRename) { Text("重命名") }
-                TextButton(onClick = onDelete) { Text("删除名单", color = MaterialTheme.colorScheme.error) }
-                Spacer(modifier = Modifier.weight(1f))
-                TextButton(onClick = onDialSettings) { Text("自动拨号") }
+            if (hasProgress) {
+                TextButton(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("查看名单") }
             }
         }
     }
@@ -295,6 +322,7 @@ fun TaskDetailPage(
     var editingTask by remember { mutableStateOf(false) }
     var confirmingDelete by remember { mutableStateOf(false) }
     var removingMember by remember { mutableStateOf<TaskCustomerRow?>(null) }
+    var showTaskMenu by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val currentMembershipId = progress?.currentMembershipId
     val resumeRow = members.firstOrNull { it.membershipId == currentMembershipId }
@@ -324,13 +352,18 @@ fun TaskDetailPage(
                 }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    PageIntro(task.title, "名单中有 ${members.size} 位客户。进度保存在本机。")
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { editingTask = true }, shape = G2CornerShape(16.dp)) {
-                            Text("重命名")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            PageIntro(task.title, "名单中有 ${members.size} 位客户。进度保存在本机。")
                         }
-                        OutlinedButton(onClick = { confirmingDelete = true }, shape = G2CornerShape(16.dp)) {
-                            Text("删除名单", color = MaterialTheme.colorScheme.error)
+                        Box {
+                            IconButton(onClick = { showTaskMenu = true }) {
+                                Icon(painterResource(R.drawable.ic_more), contentDescription = "名单更多操作")
+                            }
+                            DropdownMenu(expanded = showTaskMenu, onDismissRequest = { showTaskMenu = false }) {
+                                DropdownMenuItem(text = { Text("重命名") }, onClick = { showTaskMenu = false; editingTask = true })
+                                DropdownMenuItem(text = { Text("删除名单", color = MaterialTheme.colorScheme.error) }, onClick = { showTaskMenu = false; confirmingDelete = true })
+                            }
                         }
                     }
                     resumeRow?.let { row ->
@@ -351,11 +384,9 @@ fun TaskDetailPage(
                             )
                         }
                     }
-                    EditorialButton(
-                        label = "添加客户",
-                        onClick = { showAddDialog = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    OutlinedButton(onClick = { showAddDialog = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Text("添加客户")
+                    }
                 }
             }
         }
@@ -471,11 +502,6 @@ fun LeadsPage(
                     shape = G2CornerShape(18.dp),
                 )
                 StatusFilterRow(selected = statusFilter, onSelect = onStatusFilter)
-                EditorialButton(
-                    label = "手动新增线索",
-                    onClick = { showCreateDialog = true },
-                    modifier = Modifier.fillMaxWidth(),
-                )
             }
         }
         if (leads.isEmpty()) {
@@ -489,7 +515,10 @@ fun LeadsPage(
             }
         } else {
             item(key = "lead-count") {
-                Text("${leads.size} 条线索", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("${leads.size} 条线索", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                    TextButton(onClick = { showCreateDialog = true }) { Text("新增线索") }
+                }
             }
             items(leads, key = CustomerEntity::id) { customer ->
                 CustomerRowCard(customer = customer, onClick = { onOpenCustomer(customer.id) })
@@ -564,6 +593,7 @@ fun CustomerDetailPage(
     var noteDraft by remember(customer?.id) { mutableStateOf("") }
     var countdown by remember(activeTask?.id) { mutableIntStateOf(0) }
     var awaitingCallReturn by remember(activeTask?.id) { mutableStateOf(false) }
+    var showCustomerMenu by remember(customer?.id) { mutableStateOf(false) }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
@@ -642,7 +672,18 @@ fun CustomerDetailPage(
                         motionProfile = CardMotionProfile.Large,
                     ) {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text(currentCustomer.name, style = MaterialTheme.typography.headlineSmall)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(currentCustomer.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
+                                Box {
+                                    IconButton(onClick = { showCustomerMenu = true }) {
+                                        Icon(painterResource(R.drawable.ic_more), contentDescription = "客户更多操作")
+                                    }
+                                    DropdownMenu(expanded = showCustomerMenu, onDismissRequest = { showCustomerMenu = false }) {
+                                        DropdownMenuItem(text = { Text("编辑资料") }, onClick = { showCustomerMenu = false; editingCustomer = true })
+                                        DropdownMenuItem(text = { Text("删除客户", color = MaterialTheme.colorScheme.error) }, onClick = { showCustomerMenu = false; confirmingDelete = true })
+                                    }
+                                }
+                            }
                             Text(
                                 currentCustomer.phone,
                                 style = NumberTypography.copy(fontSize = 24.sp, lineHeight = 30.sp),
@@ -650,13 +691,7 @@ fun CustomerDetailPage(
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 InsetPill(text = currentCustomer.status.label)
-                                InsetPill(text = "本机资料")
                             }
-                            Text(
-                                "通话结束后返回应用，才能记录联系结果。自动拨号仅在开启后拨打任务下一位。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
                             EditorialButton(
                                 label = "拨打当前客户",
                                 onClick = {
@@ -671,6 +706,11 @@ fun CustomerDetailPage(
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth(),
+                            )
+                            Text(
+                                "通话结束后返回应用，才能记录联系结果。自动拨号仅在开启后拨打任务下一位。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             if (activeTask != null && nextMemberForDial != null) {
                                 if (automaticDialEnabled) {
@@ -687,14 +727,6 @@ fun CustomerDetailPage(
                                     }
                                 } else {
                                     Text("自动拨号已关闭", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(onClick = { editingCustomer = true }, shape = G2CornerShape(16.dp)) {
-                                    Text("编辑资料")
-                                }
-                                OutlinedButton(onClick = { confirmingDelete = true }, shape = G2CornerShape(16.dp)) {
-                                    Text("删除客户", color = MaterialTheme.colorScheme.error)
                                 }
                             }
                         }
@@ -757,15 +789,21 @@ fun CustomerDetailPage(
                     ) {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Text("联系结果", style = MaterialTheme.typography.titleLarge)
-                            ContactStatus.entries.chunked(3).forEach { rowStatuses ->
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    rowStatuses.forEach { status ->
-                                        ContactStatusChoice(
-                                            status = status,
-                                            selected = selectedStatus == status,
-                                            onClick = { selectedStatus = status },
-                                            modifier = Modifier.weight(1f),
-                                        )
+                            BoxWithConstraints {
+                                val fontScale = LocalDensity.current.fontScale
+                                val columns = if (maxWidth < 300.dp || fontScale >= 1.25f) 2 else 3
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    ContactStatus.entries.chunked(columns).forEach { rowStatuses ->
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            rowStatuses.forEach { status ->
+                                                ContactStatusChoice(
+                                                    status = status,
+                                                    selected = selectedStatus == status,
+                                                    onClick = { selectedStatus = status },
+                                                    modifier = Modifier.weight(1f),
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -921,8 +959,8 @@ private fun ContactStatusChoice(
             Text(
                 text = status.label,
                 style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Clip,
+                maxLines = 2,
+                textAlign = TextAlign.Center,
             )
         }
     }
@@ -983,8 +1021,8 @@ private fun CustomerRowCard(
                     Text(customer.name, style = MaterialTheme.typography.titleMedium)
                     badge?.let { InsetPill(text = it) }
                 }
-                Text(customer.phone, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(customer.status.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                Text(customer.phone, style = NumberTypography.copy(fontSize = 16.sp, lineHeight = 22.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(customer.status.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             }
             trailing?.invoke()
         }

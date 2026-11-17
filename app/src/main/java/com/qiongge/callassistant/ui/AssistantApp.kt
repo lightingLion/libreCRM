@@ -24,6 +24,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,10 +37,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
@@ -77,6 +81,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.qiongge.callassistant.R
@@ -228,8 +233,10 @@ fun AssistantApp(viewModel: MainViewModel) {
                                 text = uiState.customer?.name
                                     ?: uiState.task?.title
                                     ?: uiState.destination.title,
-                                style = MaterialTheme.typography.headlineSmall,
+                                style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         },
                         navigationIcon = {
@@ -356,6 +363,7 @@ fun AssistantApp(viewModel: MainViewModel) {
                                     MainDestination.TASKS -> TasksPage(
                                         tasks = routeState.tasks,
                                         onCreateTask = viewModel::createTask,
+                                        onImportClick = { viewModel.selectDestination(MainDestination.IMPORT) },
                                         onOpenTask = viewModel::openTask,
                                         onContinueTask = viewModel::continueTask,
                                         onRenameTask = viewModel::renameTask,
@@ -371,7 +379,6 @@ fun AssistantApp(viewModel: MainViewModel) {
 
                                     MainDestination.IMPORT -> ImportListPage(
                                         state = routeState,
-                                        onTasksClick = { viewModel.selectDestination(MainDestination.TASKS) },
                                         onAddImages = viewModel::addImportImages,
                                         onAddTabularFile = viewModel::importTabularFile,
                                         onUpdateTitle = viewModel::updateImportTitle,
@@ -502,7 +509,7 @@ private fun DataManagementDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text("数据管理", style = MaterialTheme.typography.titleLarge) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("$customerCount 位客户 · $taskCount 份名单。数据只保存在本机。")
                 OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth(), enabled = !busy) {
                     Text(if (hasImportDraft) "继续核对当前导入草稿" else "导入 CSV / Excel")
@@ -555,7 +562,8 @@ private fun AssistantDrawer(
 ) {
     ModalDrawerSheet(
         modifier = Modifier
-            .width(320.dp)
+            .widthIn(max = 320.dp)
+            .fillMaxWidth()
             .pointerInput(onCloseGesture) {
                 val systemBackEdge = 36.dp.toPx()
                 val closeThreshold = 64.dp.toPx()
@@ -592,6 +600,8 @@ private fun AssistantDrawer(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 18.dp),
         ) {
             RaisedCard(
@@ -631,7 +641,7 @@ private fun AssistantDrawer(
                 )
             }
 
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(32.dp))
             Text(
                 text = "穷哥们电销助手",
                 modifier = Modifier

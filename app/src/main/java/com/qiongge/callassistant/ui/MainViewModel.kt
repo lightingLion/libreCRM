@@ -91,6 +91,7 @@ class MainViewModel(
     init {
         viewModelScope.launch {
             localOcrImportRepository.cleanupOrphanedFiles()
+            importDraftMutationMutex.withLock { localOcrImportRepository.prepareImportReview() }
         }
         viewModelScope.launch {
             localOcrImportRepository.observeDraft().collect { draft ->
@@ -431,9 +432,9 @@ class MainViewModel(
                 )
                 val message = when {
                     result.failedImageCount > 0 -> "部分图片没有识别好，可以重试，或手动补充客户。"
-                    result.recognizedRowCount == 0 && result.skippedRowCount > 0 -> "识别到的 ${result.skippedRowCount} 行因缺项或手机号重复已自动跳过；可查看跳过记录，或手动补充客户。"
+                    result.recognizedRowCount == 0 && result.skippedRowCount > 0 -> "识别到的 ${result.skippedRowCount} 行因缺项、号码无效或重复已自动跳过；可查看跳过记录，或手动补充客户。"
                     result.recognizedRowCount == 0 -> "没有识别出名单行，可以重试，或手动补充客户。"
-                    else -> "已识别 ${result.recognizedRowCount} 条可用行；缺少必填信息和后续重复号码的行已自动跳过，可抽查后统一导入。"
+                    else -> "已识别 ${result.recognizedRowCount} 条可用行；缺项、无效和后续重复号码已自动跳过。"
                 }
                 _uiState.update { it.copy(importMessage = message) }
             } catch (exception: CancellationException) {
@@ -456,7 +457,7 @@ class MainViewModel(
             try {
                 val count = localOcrImportRepository.retryImage(imageId)
                 _uiState.update {
-                    it.copy(importMessage = if (count == 0) "这张图片暂时没识别好，可以手动补充。" else "重新识别出 $count 条可用行；缺项和后续重复号码已自动跳过。")
+                    it.copy(importMessage = if (count == 0) "这张图片暂时没识别好，可以手动补充。" else "重新识别出 $count 条可用行；缺项、无效和后续重复号码已自动跳过。")
                 }
             } catch (exception: CancellationException) {
                 throw exception
@@ -486,7 +487,7 @@ class MainViewModel(
                 val result = localOcrImportRepository.importTabularFile(uri)
                 _uiState.update {
                     it.copy(
-                        importMessage = "${result.fileName} 已读取：${result.readyRowCount} 行可导入，${result.skippedRowCount} 行因姓名或手机号缺项、或手机号重复已自动跳过。可抽查后统一确认。",
+                        importMessage = "${result.fileName} 已读取：${result.readyRowCount} 行可导入，${result.skippedRowCount} 行因缺项、号码无效或重复已自动跳过。",
                     )
                 }
             } catch (exception: CancellationException) {
@@ -642,7 +643,7 @@ class MainViewModel(
         _uiState.update { it.copy(isImportCommitting = true, importMessage = null) }
         viewModelScope.launch {
             try {
-                val listId = importDraftMutationMutex.withLock { localOcrImportRepository.commitDraft() }
+                val result = importDraftMutationMutex.withLock { localOcrImportRepository.commitDraft() }
                 _uiState.update {
                     it.copy(
                         importDraft = null,
@@ -652,7 +653,7 @@ class MainViewModel(
                     )
                 }
                 clearDetailRoutes()
-                openTask(listId)
+                continueTask(result.listId, result.firstCustomerId, result.firstMembershipId)
             } catch (exception: CancellationException) {
                 throw exception
             } catch (exception: Exception) {
