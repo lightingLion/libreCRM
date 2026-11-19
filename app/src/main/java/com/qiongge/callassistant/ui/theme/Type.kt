@@ -23,14 +23,7 @@ val AssistantTypography = BaseTypography.copy(
     headlineMedium = BaseTypography.headlineMedium.wenkai(FontWeight.Medium),
     headlineSmall = BaseTypography.headlineSmall.wenkai(FontWeight.Medium),
     titleLarge = BaseTypography.titleLarge.wenkai(FontWeight.Medium),
-    titleMedium = BaseTypography.titleMedium.wenkai(FontWeight.Medium),
-    titleSmall = BaseTypography.titleSmall.wenkai(FontWeight.Medium),
-    bodyLarge = BaseTypography.bodyLarge.wenkai(FontWeight.Normal),
-    bodyMedium = BaseTypography.bodyMedium.wenkai(FontWeight.Normal),
-    bodySmall = BaseTypography.bodySmall.wenkai(FontWeight.Normal).copy(fontSize = 14.sp, lineHeight = 20.sp),
-    labelLarge = BaseTypography.labelLarge.wenkai(FontWeight.Medium),
-    labelMedium = BaseTypography.labelMedium.wenkai(FontWeight.Medium).copy(fontSize = 13.sp, lineHeight = 18.sp),
-    labelSmall = BaseTypography.labelSmall.wenkai(FontWeight.Medium).copy(fontSize = 13.sp, lineHeight = 18.sp),
+    bodySmall = BaseTypography.bodySmall.copy(fontSize = 13.sp, lineHeight = 18.sp),
 )
 
 private fun TextStyle.wenkai(weight: FontWeight): TextStyle =
@@ -40,4 +33,9 @@ val NumberTypography = TextStyle(
     fontFamily = FontFamily.SansSerif,
     fontWeight = FontWeight.Medium,
     fontSize = 16.sp,
+    lineHeight = 22.sp,
+    fontFeatureSettings = "tnum",
 )
+
+val DialNumberTypography = NumberTypography.copy(fontSize = 24.sp, lineHeight = 30.sp)
+val CountTypography = NumberTypography.copy(fontSize = 22.sp, lineHeight = 28.sp)

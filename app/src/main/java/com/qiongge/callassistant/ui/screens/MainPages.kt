@@ -7,8 +7,18 @@ import android.content.Intent
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.SystemClock
+import android.telecom.TelecomManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
+import android.telephony.TelephonyManager
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -20,14 +30,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberOverscrollEffect
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -39,6 +53,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -53,11 +68,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -67,6 +89,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -75,7 +99,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
@@ -88,12 +111,24 @@ import com.qiongge.callassistant.data.local.entity.CustomerListEntity
 import com.qiongge.callassistant.data.local.entity.TaskProgressEntity
 import com.qiongge.callassistant.data.local.model.TaskCustomerRow
 import com.qiongge.callassistant.data.local.model.TaskSummary
+import com.qiongge.callassistant.data.local.model.TaskContactRecord
+import com.qiongge.callassistant.domain.calling.CallReturnCountdown
+import com.qiongge.callassistant.domain.calling.PhoneCallState
+import com.qiongge.callassistant.domain.calling.DialSim
+import com.qiongge.callassistant.domain.calling.PhoneDialing
+import com.qiongge.callassistant.domain.calling.automaticDialDelayRange
+import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
+import com.qiongge.callassistant.ui.components.dismissKeyboardOnBlankTap
 import com.qiongge.callassistant.ui.components.CardMotionProfile
 import com.qiongge.callassistant.ui.components.EditorialButton
 import com.qiongge.callassistant.ui.components.InsetPill
 import com.qiongge.callassistant.ui.components.RaisedCard
 import com.qiongge.callassistant.ui.theme.G2CornerShape
+import com.qiongge.callassistant.ui.theme.DialNumberTypography
 import com.qiongge.callassistant.ui.theme.NumberTypography
+import com.qiongge.callassistant.ui.components.WorkbookCustomerRow
+import com.qiongge.callassistant.ui.theme.AppSpacing
 
 @Composable
 fun TasksPage(
@@ -104,16 +139,11 @@ fun TasksPage(
     onContinueTask: (Long, Long, Long) -> Unit,
     onRenameTask: (CustomerListEntity, String) -> Unit,
     onDeleteTask: (Long) -> Unit,
-    automaticDialEnabled: Boolean,
-    automaticDialDelaySeconds: Int,
-    onAutomaticDialEnabledChange: (Boolean) -> Unit,
-    onAutomaticDialDelayChange: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var editingTask by remember { mutableStateOf<CustomerListEntity?>(null) }
     var deletingTask by remember { mutableStateOf<TaskSummary?>(null) }
-    var dialSettingsTask by remember { mutableStateOf<CustomerListEntity?>(null) }
     val listState = rememberLazyListState()
 
     LazyColumn(
@@ -165,7 +195,6 @@ fun TasksPage(
                     },
                     onRename = { editingTask = summary.task },
                     onDelete = { deletingTask = summary },
-                    onDialSettings = { dialSettingsTask = summary.task },
                 )
             }
         }
@@ -204,31 +233,39 @@ fun TasksPage(
             },
         )
     }
-    dialSettingsTask?.let {
-        AlertDialog(
-            onDismissRequest = { dialSettingsTask = null },
-            title = { Text("自动拨号设置") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("拨打下一位", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-                        Switch(checked = automaticDialEnabled, onCheckedChange = onAutomaticDialEnabledChange)
-                    }
-                    Text("仅在通话结束并返回应用后生效；倒计时期间可取消。", style = MaterialTheme.typography.bodySmall)
-                    Text("拨号间隔：$automaticDialDelaySeconds 秒", style = MaterialTheme.typography.bodyMedium)
-                    Slider(
-                        value = automaticDialDelaySeconds.toFloat(),
-                        onValueChange = { onAutomaticDialDelayChange(it.toInt().coerceIn(5, 30)) },
-                        valueRange = 5f..30f,
-                        steps = 24,
-                        enabled = automaticDialEnabled,
-                    )
-                    Text("总开关对所有任务生效；仅在继续联系且还有下一位时自动拨号。", style = MaterialTheme.typography.bodySmall)
+}
+
+@Composable
+private fun AutomaticDialSettingsDialog(
+    automaticDialEnabled: Boolean,
+    automaticDialDelaySeconds: Int,
+    onAutomaticDialEnabledChange: (Boolean) -> Unit,
+    onAutomaticDialDelayChange: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自动拨号设置") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("拨打下一位", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                    Switch(checked = automaticDialEnabled, onCheckedChange = onAutomaticDialEnabledChange)
                 }
-            },
-            confirmButton = { TextButton(onClick = { dialSettingsTask = null }) { Text("完成") } },
-        )
-    }
+                Text("通话结束且应用在前台时开始倒计时，期间可取消。", style = MaterialTheme.typography.bodySmall)
+                Text("拨号间隔：$automaticDialDelaySeconds 秒", style = MaterialTheme.typography.bodyMedium)
+                Slider(
+                    value = automaticDialDelaySeconds.toFloat(),
+                    onValueChange = { onAutomaticDialDelayChange(it.roundToInt()) },
+                    valueRange = automaticDialDelayRange.first.toFloat()..automaticDialDelayRange.last.toFloat(),
+                    steps = automaticDialDelayRange.last - automaticDialDelayRange.first - 1,
+                    enabled = automaticDialEnabled,
+                )
+                Text("倒计时归零后保存当前结果，再拨打下一位。此开关对所有任务生效。", style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
+    )
 }
 
 @Composable
@@ -238,7 +275,6 @@ private fun TaskSummaryCard(
     onContinue: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
-    onDialSettings: () -> Unit,
 ) {
     val remaining = (summary.customerCount - summary.contactedCount).coerceAtLeast(0)
     val hasProgress = summary.currentMembershipId != null && summary.currentCustomerId != null
@@ -264,7 +300,6 @@ private fun TaskSummaryCard(
                     }
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                         DropdownMenuItem(text = { Text("查看名单") }, onClick = { showMenu = false; onOpen() })
-                        DropdownMenuItem(text = { Text("自动拨号设置") }, onClick = { showMenu = false; onDialSettings() })
                         DropdownMenuItem(text = { Text("重命名") }, onClick = { showMenu = false; onRename() })
                         DropdownMenuItem(text = { Text("删除名单", color = MaterialTheme.colorScheme.error) }, onClick = { showMenu = false; onDelete() })
                     }
@@ -325,96 +360,130 @@ fun TaskDetailPage(
     var showTaskMenu by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val currentMembershipId = progress?.currentMembershipId
-    val resumeRow = members.firstOrNull { it.membershipId == currentMembershipId }
-        ?: members.firstOrNull()
+    val currentIndex = remember(members, currentMembershipId) {
+        members.indexOfFirst { it.membershipId == currentMembershipId }
+    }
+    val resumeRow = members.getOrNull(currentIndex) ?: members.firstOrNull()
 
-    LaunchedEffect(task?.id, currentMembershipId) {
-        val currentIndex = members.indexOfFirst { it.membershipId == currentMembershipId }
+    LaunchedEffect(task?.id, currentMembershipId, currentIndex >= 0) {
         if (currentIndex >= 0) {
             listState.scrollToItem(currentIndex + 2)
         }
     }
 
-    LazyColumn(
-        modifier = modifier,
-        state = listState,
-        contentPadding = PaddingValues(start = 20.dp, top = 16.dp, end = 20.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        overscrollEffect = rememberOverscrollEffect(),
-    ) {
-        item(key = "task-header") {
-            if (task == null) {
-                RaisedCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    motionProfile = CardMotionProfile.Compact,
-                ) {
+    Box(modifier = modifier, contentAlignment = Alignment.TopCenter) {
+        LazyColumn(
+            modifier = Modifier.widthIn(max = AppSpacing.readingWidth).fillMaxWidth(),
+            state = listState,
+            contentPadding = PaddingValues(
+                start = AppSpacing.lg, top = AppSpacing.lg, end = AppSpacing.lg, bottom = AppSpacing.xl,
+            ),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.joined),
+            overscrollEffect = rememberOverscrollEffect(),
+        ) {
+            item(key = "task-header") {
+                if (task == null) {
                     Text("正在打开名单…", style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(AppSpacing.lg),
+                            verticalArrangement = Arrangement.spacedBy(AppSpacing.md),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "${members.size} 位客户",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.headlineSmall,
+                                )
+                                Box {
+                                    IconButton(onClick = { showTaskMenu = true }) {
+                                        Icon(painterResource(R.drawable.ic_more), contentDescription = "名单更多操作")
+                                    }
+                                    DropdownMenu(expanded = showTaskMenu, onDismissRequest = { showTaskMenu = false }) {
+                                        DropdownMenuItem(text = { Text("重命名") }, onClick = { showTaskMenu = false; editingTask = true })
+                                        DropdownMenuItem(text = { Text("删除名单", color = MaterialTheme.colorScheme.error) }, onClick = { showTaskMenu = false; confirmingDelete = true })
+                                    }
+                                }
+                            }
+                            resumeRow?.let { row ->
+                                Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)) {
+                                    Text(
+                                        text = if (row.membershipId == currentMembershipId) {
+                                            "上次停在 ${row.customer.name}"
+                                        } else {
+                                            "从名单第一位开始联系"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Button(
+                                            onClick = { onContinueTask(row.customer.id, row.membershipId) },
+                                            modifier = Modifier.weight(1f).heightIn(min = AppSpacing.touchTarget),
+                                        ) {
+                                            Text("继续联系")
+                                        }
+                                        TextButton(onClick = { showAddDialog = true }) {
+                                            Text("添加客户")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (task == null) {
+                return@LazyColumn
+            }
+            if (members.isEmpty()) {
+                item(key = "empty-members") {
+                    EmptyStateCard(
+                        title = "名单里还没有客户",
+                        body = "可以手动新建客户，也可以从线索管理中添加已有线索。",
+                        action = "添加第一位客户",
+                        onAction = { showAddDialog = true },
+                    )
                 }
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            PageIntro(task.title, "名单中有 ${members.size} 位客户。进度保存在本机。")
-                        }
-                        Box {
-                            IconButton(onClick = { showTaskMenu = true }) {
-                                Icon(painterResource(R.drawable.ic_more), contentDescription = "名单更多操作")
-                            }
-                            DropdownMenu(expanded = showTaskMenu, onDismissRequest = { showTaskMenu = false }) {
-                                DropdownMenuItem(text = { Text("重命名") }, onClick = { showTaskMenu = false; editingTask = true })
-                                DropdownMenuItem(text = { Text("删除名单", color = MaterialTheme.colorScheme.error) }, onClick = { showTaskMenu = false; confirmingDelete = true })
-                            }
-                        }
-                    }
-                    resumeRow?.let { row ->
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                text = if (row.membershipId == currentMembershipId) {
-                                    "上次停在 ${row.customer.name}"
-                                } else {
-                                    "从名单第一位开始联系"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            EditorialButton(
-                                label = "继续联系",
-                                onClick = { onContinueTask(row.customer.id, row.membershipId) },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                    }
-                    OutlinedButton(onClick = { showAddDialog = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                        Text("添加客户")
-                    }
+                item(key = "members-label") {
+                    Text(
+                        "名单客户",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(
+                            start = AppSpacing.sm, top = AppSpacing.xl, bottom = AppSpacing.sm,
+                        ),
+                    )
                 }
-            }
-        }
-        if (members.isEmpty()) {
-            item(key = "empty-members") {
-                EmptyStateCard(
-                    title = "名单里还没有客户",
-                    body = "可以手动新建客户，也可以从线索管理中添加已有线索。",
-                    action = "添加第一位客户",
-                    onAction = { showAddDialog = true },
-                )
-            }
-        } else {
-            item(key = "members-label") {
-                Text("名单客户", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp))
-            }
-            items(members, key = { it.membershipId }) { row ->
-                val isCurrent = row.membershipId == currentMembershipId
-                CustomerRowCard(
-                    customer = row.customer,
-                    badge = if (isCurrent) "上次打开" else null,
-                    onClick = { onOpenCustomer(row.customer.id, row.membershipId) },
-                    trailing = {
-                        TextButton(onClick = { removingMember = row }) {
-                            Text("移出")
-                        }
-                    },
-                )
+                itemsIndexed(members, key = { _, row -> row.membershipId }) { index, row ->
+                    val outerCorner = MaterialTheme.shapes.large.topStart
+                    val innerCorner = MaterialTheme.shapes.extraSmall.topStart
+                    val top = if (index == 0) outerCorner else innerCorner
+                    val bottom = if (index == members.lastIndex) outerCorner else innerCorner
+                    WorkbookCustomerRow(
+                        ordinal = index + 1,
+                        name = row.customer.name,
+                        phone = row.customer.phone,
+                        result = row.customer.customResult ?: row.customer.status.label,
+                        propertyLabel = listOfNotNull(
+                            row.building?.takeIf(String::isNotBlank),
+                            row.room?.takeIf(String::isNotBlank),
+                        ).joinToString(" · ").ifEmpty { null },
+                        isCurrent = row.membershipId == currentMembershipId,
+                        shape = RoundedCornerShape(top, top, bottom, bottom),
+                        onOpen = { onOpenCustomer(row.customer.id, row.membershipId) },
+                        onRemove = { removingMember = row },
+                        modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
+                    )
+                }
             }
         }
     }
@@ -569,88 +638,292 @@ private fun StatusFilterRow(
 }
 
 @Composable
-fun CustomerDetailPage(
+internal fun CustomerDetailPage(
     customer: CustomerEntity?,
     tasks: List<CustomerListEntity>,
     contactRecords: List<CallRecordEntity>,
+    recentTaskContacts: List<TaskContactRecord>,
+    customResults: List<String>,
+    routeActive: Boolean,
     activeTask: CustomerListEntity?,
     taskMembers: List<TaskCustomerRow>,
     selectedMembershipId: Long?,
+    preferredDialSim: String?,
+    onPreferredDialSimChange: (String?) -> Unit,
     automaticDialEnabled: Boolean,
     automaticDialDelaySeconds: Int,
     onEdit: (CustomerEntity, String, String) -> Unit,
     onDelete: (Long) -> Unit,
     onOpenTask: (Long) -> Unit,
     onOpenTaskCustomer: (Long, Long) -> Unit,
-    onRecordContact: (Long, ContactStatus, String) -> Unit,
+    onAutomaticDialEnabledChange: (Boolean) -> Unit,
+    onAutomaticDialDelayChange: (Int) -> Unit,
+    onSaveContact: suspend (Long, ContactStatus, String?, String, Long?, Boolean) -> Boolean,
+    workbook: DialWorkbookPushState,
     modifier: Modifier = Modifier,
 ) {
-    var editingCustomer by remember { mutableStateOf(false) }
-    var confirmingDelete by remember { mutableStateOf(false) }
-    var selectedStatus by remember(customer?.id, customer?.status) {
-        mutableStateOf(customer?.status ?: ContactStatus.NOT_CONTACTED)
-    }
+    var editingCustomer by remember(customer?.id) { mutableStateOf(false) }
+    var confirmingDelete by remember(customer?.id) { mutableStateOf(false) }
+    var selectedStatus by remember(customer?.id) { mutableStateOf(ContactStatus.NOT_INTERESTED) }
+    var customResult by remember(customer?.id) { mutableStateOf<String?>(null) }
     var noteDraft by remember(customer?.id) { mutableStateOf("") }
-    var countdown by remember(activeTask?.id) { mutableIntStateOf(0) }
-    var awaitingCallReturn by remember(activeTask?.id) { mutableStateOf(false) }
+    var savedDraft by remember(customer?.id) { mutableStateOf<ContactDraft?>(null) }
+    var showCustomResult by remember(customer?.id) { mutableStateOf(false) }
+    var showDialSettings by remember { mutableStateOf(false) }
     var showCustomerMenu by remember(customer?.id) { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var countdown by remember { mutableIntStateOf(0) }
+    var attempt by remember { mutableStateOf<CallReturnCountdown?>(null) }
+    var showSimPicker by remember { mutableStateOf(false) }
+    var dialSims by remember { mutableStateOf(emptyList<DialSim>()) }
     val context = LocalContext.current
+    val phoneDialing = remember(context) { PhoneDialing(context) }
     val lifecycleOwner = LocalLifecycleOwner.current
+    val view = LocalView.current
+    val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    val currentPhone = customer?.phone.orEmpty()
-    val currentTaskIndexForDial = taskMembers.indexOfFirst { it.membershipId == selectedMembershipId }
-    val nextMemberForDial = taskMembers.getOrNull(currentTaskIndexForDial + 1)
-    fun launchCall(phone: String) {
-        try {
-            awaitingCallReturn = true
-            context.startActivity(Intent(Intent.ACTION_CALL, Uri.fromParts("tel", phone, null)))
-        } catch (_: ActivityNotFoundException) {
-            awaitingCallReturn = false
-            scope.launch { snackbarHostState.showSnackbar("当前设备无法发起电话。") }
-        } catch (_: SecurityException) {
-            awaitingCallReturn = false
-            scope.launch { snackbarHostState.showSnackbar("没有拨打电话权限，请重新授权后再试。") }
-        }
+    val currentTaskIndex = taskMembers.indexOfFirst { it.membershipId == selectedMembershipId }
+    val currentMember = taskMembers.getOrNull(currentTaskIndex)
+    val nextMember = if (currentTaskIndex >= 0) taskMembers.getOrNull(currentTaskIndex + 1) else null
+
+    fun notify(message: String) {
+        scope.launch { snackbarHostState.showSnackbar(message) }
     }
-    val callPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted && currentPhone.isNotBlank()) {
-            launchCall(currentPhone)
-        } else {
-            scope.launch { snackbarHostState.showSnackbar("需要授予拨打电话权限才能呼出。") }
+
+    fun stopAutomaticDial() {
+        attempt = null
+        countdown = 0
+    }
+
+    fun interruptForIncomingCall() {
+        val call = attempt ?: return
+        call.onIncomingCall()
+        stopAutomaticDial()
+        notify("来电已中断自动拨号。")
+    }
+
+    fun launchCall(phone: String, armNext: Boolean, automatic: Boolean = false): Boolean {
+        val selectedSim = if (preferredDialSim != null) {
+            phoneDialing.availableSims().firstOrNull { it.key == preferredDialSim } ?: run {
+                stopAutomaticDial()
+                notify("默认 SIM 当前不可用，请重新选择。")
+                return false
+            }
+        } else null
+        when (val state = phoneDialing.callState()) {
+            PhoneCallState.RINGING, PhoneCallState.BUSY -> {
+                if (automatic) {
+                    if (state == PhoneCallState.RINGING) interruptForIncomingCall()
+                    return false
+                }
+                stopAutomaticDial()
+                notify("电话当前占用，已停止拨号。")
+                return false
+            }
+            PhoneCallState.UNKNOWN -> if (automatic) return false
+            PhoneCallState.IDLE -> Unit
+        }
+        stopAutomaticDial()
+        if (automaticDialEnabled && armNext) {
+            attempt = CallReturnCountdown(SystemClock.elapsedRealtime())
+        }
+        return try {
+            val intent = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", phone, null))
+            selectedSim?.let { intent.putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, it.handle) }
+            context.startActivity(intent)
+            savedDraft = null
+            true
+        } catch (_: ActivityNotFoundException) {
+            stopAutomaticDial()
+            notify("当前设备无法发起电话。")
+            false
+        } catch (_: SecurityException) {
+            stopAutomaticDial()
+            notify("需要拨打电话权限才能呼出。")
+            false
         }
     }
 
-    DisposableEffect(lifecycleOwner, automaticDialEnabled, automaticDialDelaySeconds, nextMemberForDial?.membershipId) {
+    val callPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted && routeActive && customer != null) launchCall(customer.phone, armNext = nextMember != null)
+        else if (!granted) notify("需要拨打电话权限才能呼出。")
+    }
+    val phoneStatePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted && routeActive) onAutomaticDialEnabledChange(true)
+        else if (!granted) notify("开启自动拨号需要电话状态权限。")
+    }
+    val simPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted && routeActive) {
+            dialSims = phoneDialing.availableSims()
+            showSimPicker = true
+        } else if (!granted) notify("选择默认 SIM 需要电话状态权限。")
+    }
+
+    suspend fun saveDraft(next: TaskCustomerRow?): Boolean {
+        val current = customer ?: return false
+        if (saving || !routeActive) return false
+        val draft = ContactDraft(selectedStatus, customResult.takeIf { selectedStatus == ContactStatus.CUSTOM }, noteDraft.trim())
+        if (next == null && draft == savedDraft) return true
+        saving = true
+        return try {
+            val saved = onSaveContact(current.id, draft.status, draft.customResult, draft.note, next?.membershipId, draft != savedDraft)
+            if (saved && next == null) savedDraft = draft
+            if (!saved) notify("联系结果保存失败，请重试。")
+            saved
+        } finally {
+            saving = false
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME && awaitingCallReturn) {
-                awaitingCallReturn = false
-                if (automaticDialEnabled && nextMemberForDial != null) countdown = automaticDialDelaySeconds
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    attempt?.onPause()
+                    countdown = 0
+                }
+                Lifecycle.Event.ON_RESUME -> dialSims = phoneDialing.availableSims()
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(countdown, automaticDialEnabled, nextMemberForDial?.membershipId) {
-        if (countdown > 0 && automaticDialEnabled) {
-            kotlinx.coroutines.delay(1_000)
-            if (countdown == 1) {
-                val next = nextMemberForDial
-                if (next != null) {
-                    countdown = 0
-                    onOpenTaskCustomer(next.customer.id, next.membershipId)
-                    launchCall(next.customer.phone)
-                } else countdown = 0
-            } else countdown -= 1
+    DisposableEffect(context, routeActive, automaticDialEnabled) {
+        if (!routeActive || !automaticDialEnabled) return@DisposableEffect onDispose {}
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.getStringExtra(TelephonyManager.EXTRA_STATE)) {
+                    TelephonyManager.EXTRA_STATE_RINGING -> interruptForIncomingCall()
+                    TelephonyManager.EXTRA_STATE_OFFHOOK -> attempt?.onOutgoingActivity()
+                }
+            }
         }
+        ContextCompat.registerReceiver(
+            context, receiver, IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED),
+            ContextCompat.RECEIVER_EXPORTED,
+        )
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+
+    val autoDialAllowed by rememberUpdatedState(routeActive && automaticDialEnabled && !showCustomResult && !showSimPicker)
+    fun isForeground() = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && view.hasWindowFocus()
+    val latestSave by rememberUpdatedState<suspend () -> Boolean> { saveDraft(null) }
+    val latestDialNext by rememberUpdatedState<(TaskCustomerRow) -> Boolean> { next ->
+        val nextIndex = taskMembers.indexOfFirst { it.membershipId == next.membershipId }
+        if (currentTaskIndex < 0 || nextIndex != currentTaskIndex + 1) {
+            stopAutomaticDial()
+            false
+        } else if (launchCall(next.customer.phone, armNext = nextIndex < taskMembers.lastIndex, automatic = true)) {
+            onOpenTaskCustomer(next.customer.id, next.membershipId)
+            true
+        } else false
+    }
+    LaunchedEffect(attempt, automaticDialEnabled, automaticDialDelaySeconds, nextMember?.membershipId, routeActive) {
+        val call = attempt ?: return@LaunchedEffect
+        val next = nextMember
+        if (!automaticDialEnabled || next == null || !routeActive) {
+            stopAutomaticDial()
+            return@LaunchedEffect
+        }
+        while (attempt === call) {
+            val phoneState = phoneDialing.callState()
+            if (phoneState == PhoneCallState.RINGING) {
+                interruptForIncomingCall()
+                break
+            }
+            if (phoneState == PhoneCallState.UNKNOWN) {
+                stopAutomaticDial()
+                notify("无法读取电话状态，自动拨号已停止。")
+                break
+            }
+            val seconds = call.sample(SystemClock.elapsedRealtime(), isForeground() && autoDialAllowed, phoneState == PhoneCallState.BUSY, automaticDialDelaySeconds)
+            countdown = seconds ?: 0
+            if (seconds == 0 && !saving) {
+                if (!latestSave()) {
+                    stopAutomaticDial()
+                    break
+                }
+                if (attempt !== call || call.interrupted) break
+                if (isForeground() && autoDialAllowed && latestDialNext(next)) {
+                    if (attempt === call) stopAutomaticDial()
+                    break
+                }
+                call.resetCountdown()
+            }
+            delay(250L)
+        }
+    }
+
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val workbookMembers by rememberUpdatedState(taskMembers)
+    val workbookIndex by rememberUpdatedState(currentTaskIndex)
+    val workbookSaving by rememberUpdatedState(saving)
+    val jumpToCustomer by rememberUpdatedState(onOpenTaskCustomer)
+    val saveAndJump by rememberUpdatedState<suspend (TaskCustomerRow) -> Boolean> { saveDraft(it) }
+    LaunchedEffect(customer?.id, selectedMembershipId) {
+        if (customer != null) listState.scrollToItem(0)
+    }
+
+    fun openWorkbook(): Boolean {
+        if (!routeActive || saving || currentTaskIndex < 0 || workbook.open) return false
+        stopAutomaticDial()
+        focusManager.clearFocus()
+        keyboard?.hide()
+        workbook.show { panelModifier ->
+            DialWorkbookPanel(
+                members = workbookMembers,
+                currentIndex = workbookIndex,
+                saving = workbookSaving,
+                onDismiss = workbook::close,
+                onOpen = { member ->
+                    workbook.close()
+                    jumpToCustomer(member.customer.id, member.membershipId)
+                },
+                onSaveAndOpen = { member ->
+                    scope.launch { if (saveAndJump(member)) workbook.close() }
+                },
+                modifier = panelModifier,
+            )
+        }
+        return true
+    }
+
+    val onOpenWorkbook by rememberUpdatedState { openWorkbook() }
+    val swipeModifier = if (routeActive && customer != null && currentTaskIndex >= 0 &&
+        !saving && !workbook.open
+    ) {
+        Modifier.pointerInput(selectedMembershipId) {
+            val edgeInset = 24.dp.toPx()
+            val threshold = 64.dp.toPx()
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                if (down.position.x < edgeInset || down.position.x > size.width - edgeInset) {
+                    return@awaitEachGesture
+                }
+                var distance = 0f
+                val dragStart = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
+                    change.consume()
+                    distance = overSlop
+                } ?: return@awaitEachGesture
+                val completed = horizontalDrag(dragStart.id) { change ->
+                    distance += change.position.x - change.previousPosition.x
+                    change.consume()
+                }
+                if (completed && distance <= -threshold) onOpenWorkbook()
+            }
+        }
+    } else {
+        Modifier
     }
 
     Box(modifier = modifier) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            modifier = Modifier.fillMaxSize().then(swipeModifier),
             contentPadding = PaddingValues(start = 20.dp, top = 16.dp, end = 20.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             overscrollEffect = rememberOverscrollEffect(),
@@ -679,6 +952,16 @@ fun CustomerDetailPage(
                                         Icon(painterResource(R.drawable.ic_more), contentDescription = "客户更多操作")
                                     }
                                     DropdownMenu(expanded = showCustomerMenu, onDismissRequest = { showCustomerMenu = false }) {
+                                        if (currentMember != null) {
+                                            DropdownMenuItem(
+                                                text = { Text("自动拨号设置") },
+                                                onClick = {
+                                                    showCustomerMenu = false
+                                                    stopAutomaticDial()
+                                                    showDialSettings = true
+                                                },
+                                            )
+                                        }
                                         DropdownMenuItem(text = { Text("编辑资料") }, onClick = { showCustomerMenu = false; editingCustomer = true })
                                         DropdownMenuItem(text = { Text("删除客户", color = MaterialTheme.colorScheme.error) }, onClick = { showCustomerMenu = false; confirmingDelete = true })
                                     }
@@ -686,18 +969,32 @@ fun CustomerDetailPage(
                             }
                             Text(
                                 currentCustomer.phone,
-                                style = NumberTypography.copy(fontSize = 24.sp, lineHeight = 30.sp),
+                                style = DialNumberTypography,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                InsetPill(text = currentCustomer.status.label)
+                            val address = listOfNotNull(currentMember?.building, currentMember?.room).joinToString(" · ")
+                            if (address.isNotEmpty()) Text("房号  $address", style = MaterialTheme.typography.bodyMedium)
+                            TextButton(
+                                enabled = !saving,
+                                onClick = {
+                                    stopAutomaticDial()
+                                    if (phoneDialing.hasPhoneStatePermission()) {
+                                        dialSims = phoneDialing.availableSims()
+                                        showSimPicker = true
+                                    } else simPermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
+                                },
+                            ) {
+                                val label = if (preferredDialSim == null) "系统默认"
+                                else dialSims.firstOrNull { it.key == preferredDialSim }?.label ?: "SIM 不可用"
+                                Text("拨号卡 · $label", maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             EditorialButton(
                                 label = "拨打当前客户",
+                                enabled = !saving,
                                 onClick = {
                                     try {
                                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
-                                            launchCall(currentCustomer.phone)
+                                            launchCall(currentCustomer.phone, armNext = nextMember != null)
                                         } else callPermissionLauncher.launch(Manifest.permission.CALL_PHONE)
                                     } catch (_: ActivityNotFoundException) {
                                         scope.launch {
@@ -712,7 +1009,7 @@ fun CustomerDetailPage(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            if (activeTask != null && nextMemberForDial != null) {
+                            if (activeTask != null && nextMember != null) {
                                 if (automaticDialEnabled) {
                                     Text("自动拨号已开启 · 间隔 ${automaticDialDelaySeconds} 秒", style = MaterialTheme.typography.bodyMedium)
                                     if (countdown > 0) {
@@ -722,7 +1019,7 @@ fun CustomerDetailPage(
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                         ) {
                                             Text("${countdown} 秒后拨打下一位", style = MaterialTheme.typography.bodyMedium)
-                                            TextButton(onClick = { countdown = 0 }) { Text("取消") }
+                                            TextButton(onClick = ::stopAutomaticDial) { Text("取消") }
                                         }
                                     }
                                 } else {
@@ -733,15 +1030,23 @@ fun CustomerDetailPage(
                     }
                 }
 
-                val currentTaskIndex = taskMembers.indexOfFirst {
-                    it.membershipId == selectedMembershipId
-                }
                 if (activeTask != null && currentTaskIndex >= 0) {
-                    val previousMember = taskMembers.getOrNull(currentTaskIndex - 1)
-                    val nextMember = taskMembers.getOrNull(currentTaskIndex + 1)
                     item(key = "task-contact-position") {
                         RaisedCard(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {
+                                customActions = buildList {
+                                    if (routeActive && !saving) {
+                                        add(CustomAccessibilityAction("打开客户名单") { openWorkbook() })
+                                    }
+                                    if (routeActive && !saving && nextMember != null) {
+                                        add(CustomAccessibilityAction("保存并下一位") {
+                                            stopAutomaticDial()
+                                            scope.launch { saveDraft(nextMember) }
+                                            true
+                                        })
+                                    }
+                                }
+                            },
                             motionProfile = CardMotionProfile.Medium,
                         ) {
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -751,32 +1056,14 @@ fun CustomerDetailPage(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
-                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            previousMember?.let {
-                                                onOpenTaskCustomer(it.customer.id, it.membershipId)
-                                            }
-                                        },
-                                        enabled = previousMember != null,
-                                        modifier = Modifier.weight(1f),
-                                        shape = G2CornerShape(16.dp),
-                                    ) {
-                                        Text("上一位")
-                                    }
-                                    OutlinedButton(
-                                        onClick = {
-                                            nextMember?.let {
-                                                onOpenTaskCustomer(it.customer.id, it.membershipId)
-                                            }
-                                        },
-                                        enabled = nextMember != null,
-                                        modifier = Modifier.weight(1f),
-                                        shape = G2CornerShape(16.dp),
-                                    ) {
-                                        Text("下一位")
-                                    }
+                                TextButton(onClick = { openWorkbook() }, enabled = routeActive && !saving) {
+                                    Text("客户名单")
                                 }
+                                Text(
+                                    "左滑打开名单",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
                     }
@@ -797,9 +1084,13 @@ fun CustomerDetailPage(
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             rowStatuses.forEach { status ->
                                                 ContactStatusChoice(
-                                                    status = status,
                                                     selected = selectedStatus == status,
-                                                    onClick = { selectedStatus = status },
+                                                    onClick = {
+                                                        if (status == ContactStatus.CUSTOM) {
+                                                            showCustomResult = true
+                                                        } else selectedStatus = status
+                                                    },
+                                                    label = if (status == ContactStatus.CUSTOM) customResult ?: status.label else status.label,
                                                     modifier = Modifier.weight(1f),
                                                 )
                                             }
@@ -817,12 +1108,22 @@ fun CustomerDetailPage(
                                 maxLines = 5,
                                 shape = G2CornerShape(16.dp),
                             )
+                            if (nextMember != null) {
+                                TextButton(
+                                    enabled = !saving,
+                                    onClick = {
+                                        stopAutomaticDial()
+                                        scope.launch { saveDraft(nextMember) }
+                                    },
+                                ) { Text("保存并下一位") }
+                            }
                             EditorialButton(
                                 label = "保存联系记录",
-                                enabled = noteDraft.isNotBlank() || selectedStatus != currentCustomer.status,
+                                enabled = !saving && ContactDraft(
+                                    selectedStatus, customResult.takeIf { selectedStatus == ContactStatus.CUSTOM }, noteDraft.trim(),
+                                ) != savedDraft,
                                 onClick = {
-                                    onRecordContact(currentCustomer.id, selectedStatus, noteDraft)
-                                    noteDraft = ""
+                                    scope.launch { saveDraft(null) }
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                             )
@@ -831,9 +1132,13 @@ fun CustomerDetailPage(
                 }
 
                 item(key = "contact-history-title") {
-                    Text("联系记录", style = MaterialTheme.typography.titleMedium)
+                    Text(if (activeTask != null) "名单最近联系记录" else "联系记录", style = MaterialTheme.typography.titleMedium)
                 }
-                if (contactRecords.isEmpty()) {
+                if (activeTask != null && recentTaskContacts.isNotEmpty()) {
+                    items(recentTaskContacts, key = { "task-record-${it.record.id}" }) { entry ->
+                        ContactRecordCard(entry.record, "${entry.customerName} · ${entry.phone}")
+                    }
+                } else if (contactRecords.isEmpty() || activeTask != null) {
                     item(key = "contact-history-empty") {
                         RaisedCard(
                             modifier = Modifier.fillMaxWidth(),
@@ -847,7 +1152,7 @@ fun CustomerDetailPage(
                         }
                     }
                 } else {
-                    items(contactRecords, key = { it.id }) { record ->
+                    items(contactRecords, key = { "record-${it.id}" }) { record ->
                         ContactRecordCard(record = record)
                     }
                 }
@@ -869,7 +1174,7 @@ fun CustomerDetailPage(
                         }
                     }
                 } else {
-                    items(tasks, key = { it.id }) { task ->
+                    items(tasks, key = { "customer-task-${it.id}" }) { task ->
                         RaisedCard(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -897,6 +1202,37 @@ fun CustomerDetailPage(
         )
     }
 
+    if (showSimPicker) {
+        PreferredDialSimDialog(
+            sims = dialSims,
+            preferred = preferredDialSim,
+            onDismiss = { showSimPicker = false },
+            onSelect = { key ->
+                onPreferredDialSimChange(key)
+                showSimPicker = false
+            },
+        )
+    }
+    if (showDialSettings) {
+        AutomaticDialSettingsDialog(
+            automaticDialEnabled = automaticDialEnabled,
+            automaticDialDelaySeconds = automaticDialDelaySeconds,
+            onAutomaticDialEnabledChange = { enabled ->
+                if (enabled && !phoneDialing.hasPhoneStatePermission()) {
+                    phoneStatePermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
+                } else onAutomaticDialEnabledChange(enabled)
+            },
+            onAutomaticDialDelayChange = onAutomaticDialDelayChange,
+            onDismiss = { showDialSettings = false },
+        )
+    }
+    if (showCustomResult) {
+        CustomContactResultDialog(customResult, customResults, onDismiss = { showCustomResult = false }) {
+            customResult = it
+            selectedStatus = ContactStatus.CUSTOM
+            showCustomResult = false
+        }
+    }
     val currentCustomer = customer
     if (editingCustomer && currentCustomer != null) {
         CustomerEditorDialog(
@@ -924,11 +1260,79 @@ fun CustomerDetailPage(
     }
 }
 
+private data class ContactDraft(val status: ContactStatus, val customResult: String?, val note: String)
+
+@Composable
+private fun PreferredDialSimDialog(
+    sims: List<DialSim>,
+    preferred: String?,
+    onDismiss: () -> Unit,
+    onSelect: (String?) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("默认拨号卡") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("手动和自动拨号共用此设置。", style = MaterialTheme.typography.bodySmall)
+                if (sims.isEmpty()) Text("系统暂未返回可用的通话卡。", style = MaterialTheme.typography.bodySmall)
+                val choices = listOf(null to "跟随系统默认") + sims.map { it.key to it.label }
+                choices.forEach { (key, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(selected = key == preferred, role = Role.RadioButton, onClick = { onSelect(key) })
+                            .heightIn(min = 48.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = key == preferred, onClick = null)
+                        Text(label, modifier = Modifier.weight(1f).padding(start = 12.dp))
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+@Composable
+private fun CustomContactResultDialog(
+    initial: String?,
+    previousResults: List<String>,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    var value by remember { mutableStateOf(initial.orEmpty()) }
+    AlertDialog(
+        modifier = Modifier.dismissKeyboardOnBlankTap(),
+        onDismissRequest = onDismiss,
+        title = { Text("自定义联系结果") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it.take(40) },
+                    label = { Text("结果名称") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                previousResults.forEach { result ->
+                    TextButton(onClick = { value = result }) { Text(result) }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = value.isNotBlank(), onClick = { onSelect(value.trim()) }) { Text("使用") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
 @Composable
 private fun ContactStatusChoice(
-    status: ContactStatus,
     selected: Boolean,
     onClick: () -> Unit,
+    label: String,
     modifier: Modifier = Modifier,
 ) {
     val containerColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
@@ -957,7 +1361,7 @@ private fun ContactStatusChoice(
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = status.label,
+                text = label,
                 style = MaterialTheme.typography.labelMedium,
                 maxLines = 2,
                 textAlign = TextAlign.Center,
@@ -967,7 +1371,7 @@ private fun ContactStatusChoice(
 }
 
 @Composable
-private fun ContactRecordCard(record: CallRecordEntity) {
+private fun ContactRecordCard(record: CallRecordEntity, customerLabel: String? = null) {
     RaisedCard(
         modifier = Modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
@@ -976,7 +1380,7 @@ private fun ContactRecordCard(record: CallRecordEntity) {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = record.result.label,
+                    text = record.customResult ?: record.result.label,
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary,
@@ -987,6 +1391,7 @@ private fun ContactRecordCard(record: CallRecordEntity) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            customerLabel?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
             record.note?.let { note ->
                 Text(note, style = MaterialTheme.typography.bodyMedium)
             }
@@ -1021,8 +1426,8 @@ private fun CustomerRowCard(
                     Text(customer.name, style = MaterialTheme.typography.titleMedium)
                     badge?.let { InsetPill(text = it) }
                 }
-                Text(customer.phone, style = NumberTypography.copy(fontSize = 16.sp, lineHeight = 22.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(customer.status.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Text(customer.phone, style = NumberTypography, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(customer.customResult ?: customer.status.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             }
             trailing?.invoke()
         }
@@ -1081,7 +1486,7 @@ private fun ConfirmActionDialog(
     )
 }
 
-private val ContactStatus.label: String
+internal val ContactStatus.label: String
     get() = when (this) {
         ContactStatus.NOT_CONTACTED -> "未联系"
         ContactStatus.UNREACHED -> "未接通"
@@ -1089,4 +1494,5 @@ private val ContactStatus.label: String
         ContactStatus.INTERESTED -> "有意向"
         ContactStatus.NOT_INTERESTED -> "暂不考虑"
         ContactStatus.DO_NOT_CONTACT -> "不再联系"
+        ContactStatus.CUSTOM -> "自定义"
     }

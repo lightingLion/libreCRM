@@ -77,6 +77,8 @@ data class ImportDraftRowEntity(
     val duplicateMode: String?,
     val duplicateCustomerId: Long?,
     val skipReason: String? = null,
+    val building: String? = null,
+    val room: String? = null,
 )
 
 object ImportSkipReason {

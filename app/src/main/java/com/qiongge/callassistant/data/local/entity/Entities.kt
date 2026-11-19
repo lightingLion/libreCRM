@@ -16,6 +16,7 @@ data class CustomerEntity(
     val status: ContactStatus = ContactStatus.NOT_CONTACTED,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    val customResult: String? = null,
 )
 
 @Entity(tableName = "customer_lists")
@@ -52,6 +53,8 @@ data class ListMembershipEntity(
     val listId: Long,
     val customerId: Long,
     val sortOrder: Int,
+    val building: String? = null,
+    val room: String? = null,
 )
 
 @Entity(
@@ -79,6 +82,7 @@ data class CallRecordEntity(
     val result: ContactStatus,
     val note: String?,
     val createdAt: Long = System.currentTimeMillis(),
+    val customResult: String? = null,
 )
 
 @Entity(

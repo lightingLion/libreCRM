@@ -7,4 +7,5 @@ enum class ContactStatus {
     INTERESTED,
     NOT_INTERESTED,
     DO_NOT_CONTACT,
+    CUSTOM,
 }

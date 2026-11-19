@@ -36,7 +36,16 @@ object PhoneRecognition {
     fun comparableDigits(value: String): String? = normalizeForEditing(value)
         .takeIf(mainlandMobilePattern::matches)
 
-    fun candidates(text: String): List<String> = candidatePattern.findAll(text)
+    private fun normalizedText(text: String): String =
+        java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKC)
+
+    fun isPhoneCell(text: String): Boolean {
+        val normalized = normalizedText(text)
+        return candidatePattern.containsMatchIn(normalized) &&
+            candidatePattern.replace(normalized, "").all { it.isWhitespace() || it in "/、,;|()（）" }
+    }
+
+    fun candidates(text: String): List<String> = candidatePattern.findAll(normalizedText(text))
         .map { normalizeForEditing(it.value.trim()) }
         .filter(::isMainlandMobile)
         .distinct()

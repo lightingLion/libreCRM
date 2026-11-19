@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.qiongge.callassistant.ui.theme.cardSurface
 import com.qiongge.callassistant.ui.theme.G2CornerShape
 import kotlinx.coroutines.delay
 
@@ -110,7 +111,7 @@ fun RaisedCard(
                 spotColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
             ),
         shape = shape,
-        color = MaterialTheme.colorScheme.surface,
+        color = MaterialTheme.colorScheme.cardSurface,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.92f)),
         tonalElevation = 0.dp,

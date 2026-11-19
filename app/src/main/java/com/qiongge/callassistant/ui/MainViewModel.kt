@@ -1,5 +1,7 @@
 package com.qiongge.callassistant.ui
 
+import com.qiongge.callassistant.domain.calling.DEFAULT_AUTOMATIC_DIAL_DELAY_SECONDS
+
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -10,8 +12,12 @@ import com.qiongge.callassistant.data.local.entity.CustomerListEntity
 import com.qiongge.callassistant.data.local.entity.TaskProgressEntity
 import com.qiongge.callassistant.data.local.model.TaskCustomerRow
 import com.qiongge.callassistant.data.local.model.TaskSummary
+import com.qiongge.callassistant.data.local.model.TaskContactRecord
+import android.util.Log
 import com.qiongge.callassistant.data.local.model.ImportDraftSnapshot
 import com.qiongge.callassistant.data.preferences.UserPreferencesRepository
+import com.qiongge.callassistant.data.preferences.CsvDirectory
+import com.qiongge.callassistant.data.preferences.ThemeMode
 import com.qiongge.callassistant.data.repository.CustomerRepository
 import com.qiongge.callassistant.data.repository.ImportWorkflowException
 import com.qiongge.callassistant.data.repository.LocalOcrImportRepository
@@ -42,9 +48,13 @@ import java.io.File
 
 data class MainUiState(
     val destination: MainDestination = MainDestination.TASKS,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val csvDirectory: CsvDirectory? = null,
+    val directoryMessage: String? = null,
     val displayName: String = "",
+    val preferredDialSim: String? = null,
     val automaticDialEnabled: Boolean = false,
-    val automaticDialDelaySeconds: Int = 5,
+    val automaticDialDelaySeconds: Int = DEFAULT_AUTOMATIC_DIAL_DELAY_SECONDS,
     val drawerGreeting: String? = null,
     val tasks: List<TaskSummary> = emptyList(),
     val allCustomers: List<CustomerEntity> = emptyList(),
@@ -55,8 +65,11 @@ data class MainUiState(
     val task: CustomerListEntity? = null,
     val taskCustomers: List<TaskCustomerRow> = emptyList(),
     val taskProgress: TaskProgressEntity? = null,
+    val recentTaskContacts: List<TaskContactRecord> = emptyList(),
+    val customResults: List<String> = emptyList(),
     val selectedCustomerId: Long? = null,
     val selectedMembershipId: Long? = null,
+    val returnToTaskHome: Boolean = false,
     val customer: CustomerEntity? = null,
     val customerTasks: List<CustomerListEntity> = emptyList(),
     val customerContactRecords: List<CallRecordEntity> = emptyList(),
@@ -81,6 +94,8 @@ class MainViewModel(
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
     private val importDraftMutationMutex = Mutex()
+    private val contactMutationMutex = Mutex()
+    private val csvDirectoryMutex = Mutex()
 
     private val leadQuery = MutableStateFlow("")
     private val leadStatusFilter = MutableStateFlow<ContactStatus?>(null)
@@ -89,6 +104,15 @@ class MainViewModel(
     private var customerObservation: Job? = null
 
     init {
+        viewModelScope.launch {
+            combine(preferencesRepository.themeMode, preferencesRepository.csvDirectory, ::Pair)
+                .collect { (theme, directory) -> _uiState.update { it.copy(themeMode = theme, csvDirectory = directory) } }
+        }
+        viewModelScope.launch {
+            taskRepository.observeCustomResults().collect { results ->
+                _uiState.update { it.copy(customResults = results) }
+            }
+        }
         viewModelScope.launch {
             localOcrImportRepository.cleanupOrphanedFiles()
             importDraftMutationMutex.withLock { localOcrImportRepository.prepareImportReview() }
@@ -101,6 +125,11 @@ class MainViewModel(
         viewModelScope.launch {
             preferencesRepository.displayName.collect { name ->
                 _uiState.update { it.copy(displayName = name) }
+            }
+        }
+        viewModelScope.launch {
+            preferencesRepository.preferredDialSim.collect { key ->
+                _uiState.update { it.copy(preferredDialSim = key) }
             }
         }
         viewModelScope.launch {
@@ -154,6 +183,11 @@ class MainViewModel(
         leadQuery.value = query
     }
 
+    fun setPreferredDialSim(key: String?) {
+        _uiState.update { it.copy(preferredDialSim = key) }
+        viewModelScope.launch { preferencesRepository.setPreferredDialSim(key) }
+    }
+
     fun setAutomaticDialEnabled(enabled: Boolean) {
         viewModelScope.launch { preferencesRepository.setAutomaticDialEnabled(enabled) }
     }
@@ -168,21 +202,32 @@ class MainViewModel(
 
     fun openTask(taskId: Long) {
         customerObservation?.cancel()
-        taskObservation?.cancel()
         _uiState.update {
             it.copy(
                 selectedTaskId = taskId,
                 task = null,
                 taskCustomers = emptyList(),
                 taskProgress = null,
+                recentTaskContacts = emptyList(),
                 selectedCustomerId = null,
                 selectedMembershipId = null,
+                returnToTaskHome = false,
                 customer = null,
                 customerTasks = emptyList(),
                 customerContactRecords = emptyList(),
             )
         }
+        observeTask(taskId)
+    }
+
+    private fun observeTask(taskId: Long) {
+        taskObservation?.cancel()
         taskObservation = viewModelScope.launch {
+            launch {
+                taskRepository.observeRecentTaskContacts(taskId).collect { records ->
+                    _uiState.update { it.copy(recentTaskContacts = records) }
+                }
+            }
             combine(
                 taskRepository.observeTask(taskId),
                 taskRepository.observeTaskCustomers(taskId),
@@ -204,8 +249,8 @@ class MainViewModel(
     }
 
     fun continueTask(taskId: Long, customerId: Long, membershipId: Long) {
-        openTask(taskId)
-        openCustomer(customerId, taskId, membershipId)
+        showCustomer(customerId, taskId, membershipId, saveProgress = true, returnToTaskHome = true)
+        observeTask(taskId)
     }
 
     fun closeTask() {
@@ -217,7 +262,9 @@ class MainViewModel(
                 task = null,
                 taskCustomers = emptyList(),
                 taskProgress = null,
+                recentTaskContacts = emptyList(),
                 selectedMembershipId = null,
+                returnToTaskHome = false,
             )
         }
     }
@@ -311,8 +358,20 @@ class MainViewModel(
     }
 
     fun openCustomer(customerId: Long, fromTaskId: Long? = null, membershipId: Long? = null) {
+        showCustomer(customerId, fromTaskId, membershipId, saveProgress = true)
+    }
+
+    private fun showCustomer(
+        customerId: Long,
+        fromTaskId: Long?,
+        membershipId: Long?,
+        saveProgress: Boolean,
+        returnToTaskHome: Boolean = _uiState.value.let { state ->
+            fromTaskId != null && state.selectedTaskId == fromTaskId && state.returnToTaskHome
+        },
+    ) {
         customerObservation?.cancel()
-        if (fromTaskId != null && membershipId != null) {
+        if (saveProgress && fromTaskId != null && membershipId != null) {
             viewModelScope.launch {
                 taskRepository.saveProgress(
                     TaskProgressEntity(
@@ -324,11 +383,17 @@ class MainViewModel(
             }
         }
         _uiState.update {
+            val sameTask = it.selectedTaskId == fromTaskId
             it.copy(
                 selectedCustomerId = customerId,
                 selectedTaskId = fromTaskId,
                 selectedMembershipId = membershipId,
-                customer = null,
+                returnToTaskHome = returnToTaskHome,
+                task = it.task.takeIf { sameTask },
+                taskCustomers = if (sameTask) it.taskCustomers else emptyList(),
+                taskProgress = it.taskProgress.takeIf { sameTask },
+                recentTaskContacts = if (sameTask) it.recentTaskContacts else emptyList(),
+                customer = if (sameTask) it.taskCustomers.firstOrNull { member -> member.membershipId == membershipId }?.customer else null,
                 customerTasks = emptyList(),
                 customerContactRecords = emptyList(),
             )
@@ -355,12 +420,17 @@ class MainViewModel(
     }
 
     fun closeCustomer() {
+        if (_uiState.value.returnToTaskHome) {
+            clearDetailRoutes()
+            return
+        }
         customerObservation?.cancel()
         customerObservation = null
         _uiState.update {
             it.copy(
                 selectedCustomerId = null,
                 selectedMembershipId = null,
+                returnToTaskHome = false,
                 customer = null,
                 customerTasks = emptyList(),
                 customerContactRecords = emptyList(),
@@ -368,19 +438,47 @@ class MainViewModel(
         }
     }
 
-    fun recordContact(customerId: Long, result: ContactStatus, note: String) {
-        val customer = _uiState.value.customer ?: return
-        if (customer.id != customerId) return
-        val cleanedNote = note.trim().takeIf(String::isNotEmpty)
-        if (result == customer.status && cleanedNote == null) return
-        val listId = _uiState.value.selectedTaskId
-        viewModelScope.launch {
-            taskRepository.recordContact(
+    suspend fun saveContact(
+        customerId: Long,
+        result: ContactStatus,
+        customResult: String?,
+        note: String,
+        nextMembershipId: Long?,
+        writeRecord: Boolean,
+    ): Boolean = contactMutationMutex.withLock {
+        val state = _uiState.value
+        if (state.selectedCustomerId != customerId) return@withLock false
+        val taskId = state.selectedTaskId
+        val next = state.taskCustomers.firstOrNull { it.membershipId == nextMembershipId }
+        if (nextMembershipId != null && (next == null || taskId == null)) return@withLock false
+        val custom = customResult?.trim()?.take(40)?.takeIf(String::isNotEmpty)
+        if (result == ContactStatus.CUSTOM && custom == null) return@withLock false
+        val record = if (writeRecord) {
+            CallRecordEntity(
                 customerId = customerId,
-                listId = listId,
+                listId = taskId.takeIf { state.selectedMembershipId != null },
                 result = result,
-                note = cleanedNote,
+                note = note.trim().takeIf(String::isNotEmpty),
+                customResult = custom.takeIf { result == ContactStatus.CUSTOM },
             )
+        } else null
+        val progress = if (next != null && taskId != null) {
+            TaskProgressEntity(listId = taskId, currentMembershipId = next.membershipId)
+        } else null
+        try {
+            taskRepository.saveContactAndProgress(record, progress)
+            val current = _uiState.value
+            if (next != null && current.selectedCustomerId == customerId &&
+                current.selectedTaskId == taskId && current.selectedMembershipId == state.selectedMembershipId
+            ) {
+                showCustomer(next.customer.id, taskId, next.membershipId, saveProgress = false)
+            }
+            true
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: Exception) {
+            Log.w("LibreCRM", "Contact save failed", exception)
+            false
         }
     }
 
@@ -527,18 +625,58 @@ class MainViewModel(
         }
     }
 
+    fun setThemeMode(mode: ThemeMode) {
+        viewModelScope.launch { preferencesRepository.setThemeMode(mode) }
+    }
+
+    fun setCsvDirectory(uri: Uri?) {
+        viewModelScope.launch {
+            csvDirectoryMutex.withLock {
+                _uiState.update { it.copy(directoryMessage = null) }
+                try {
+                    preferencesRepository.setCsvDirectory(uri)
+                } catch (exception: CancellationException) {
+                    throw exception
+                } catch (exception: Exception) {
+                    _uiState.update { it.copy(directoryMessage = "无法保存目录授权，请重新选择文件夹。") }
+                }
+            }
+        }
+    }
+
+    fun exportCsvToDirectory(directory: CsvDirectory) {
+        val timestamp = LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss_SSS"))
+        val fileName = "客户资料_$timestamp.csv"
+        runExport(
+            format = DataExportFormat.CSV,
+            location = " · ${directory.label}",
+            failure = "默认目录不可写，请在设置中重新授权或使用 CSV 另存为。",
+        ) {
+            csvDirectoryMutex.withLock { localDataManagementRepository.exportCsvToDirectory(directory.uri, fileName) }
+        }
+    }
+
     fun exportCustomerData(uri: Uri, format: DataExportFormat) {
+        runExport(format) { localDataManagementRepository.exportCustomers(uri, format) }
+    }
+
+    private fun runExport(
+        format: DataExportFormat,
+        location: String = "",
+        failure: String = "文件导出失败，请重新选择保存位置。",
+        export: suspend () -> Int,
+    ) {
         if (_uiState.value.isDataProcessing) return
         _uiState.update { it.copy(isDataProcessing = true, dataMessage = null) }
         viewModelScope.launch {
             try {
-                val count = localDataManagementRepository.exportCustomers(uri, format)
+                val count = export()
                 val label = if (format == DataExportFormat.CSV) "CSV" else "Excel"
-                _uiState.update { it.copy(dataMessage = "已导出 $count 位客户的 $label 文件。") }
+                _uiState.update { it.copy(dataMessage = "已导出 $count 位客户的 $label 文件$location。") }
             } catch (exception: CancellationException) {
                 throw exception
             } catch (exception: Exception) {
-                _uiState.update { it.copy(dataMessage = (exception as? ImportWorkflowException)?.message ?: "文件导出失败，请重新选择保存位置。") }
+                _uiState.update { it.copy(dataMessage = (exception as? ImportWorkflowException)?.message ?: failure) }
             } finally {
                 _uiState.update { it.copy(isDataProcessing = false) }
             }
@@ -678,8 +816,10 @@ class MainViewModel(
                 task = null,
                 taskCustomers = emptyList(),
                 taskProgress = null,
+                recentTaskContacts = emptyList(),
                 selectedCustomerId = null,
                 selectedMembershipId = null,
+                returnToTaskHome = false,
                 customer = null,
                 customerTasks = emptyList(),
                 customerContactRecords = emptyList(),

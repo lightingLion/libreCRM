@@ -2,11 +2,13 @@ package com.qiongge.callassistant.data.repository
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import com.qiongge.callassistant.data.local.AppDatabase
 import com.qiongge.callassistant.data.local.dao.CustomerDao
 import com.qiongge.callassistant.data.local.entity.ContactStatus
 import com.qiongge.callassistant.data.local.model.CustomerExportRow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.BufferedWriter
 import java.io.OutputStream
@@ -40,6 +42,20 @@ class LocalDataManagementRepository(
         rows.size
     }
 
+    suspend fun exportCsvToDirectory(directory: Uri, fileName: String): Int = withContext(Dispatchers.IO) {
+        val document = DocumentsContract.buildDocumentUriUsingTree(directory, DocumentsContract.getTreeDocumentId(directory))
+        val file = DocumentsContract.createDocument(contentResolver, document, "text/csv", fileName)
+            ?: throw ImportWorkflowException("无法在默认目录创建 CSV，请重新选择目录或另存。")
+        try {
+            exportCustomers(file, DataExportFormat.CSV)
+        } catch (exception: Exception) {
+            withContext(NonCancellable) {
+                runCatching { DocumentsContract.deleteDocument(contentResolver, file) }
+            }
+            throw exception
+        }
+    }
+
     suspend fun clearAllData() = withContext(Dispatchers.IO) {
         database.clearAllTables()
     }
@@ -54,7 +70,9 @@ class LocalDataManagementRepository(
                     listOf(
                         row.name,
                         row.phone,
-                        ContactStatus.valueOf(row.status).labelForExport(),
+                        row.building.orEmpty(),
+                        row.room.orEmpty(),
+                        row.customResult ?: ContactStatus.valueOf(row.status).labelForExport(),
                         row.note.orEmpty(),
                         row.taskNames.orEmpty(),
                         formatTimestamp(row.updatedAt),
@@ -106,7 +124,9 @@ class LocalDataManagementRepository(
                     listOf(
                         row.name,
                         row.phone,
-                        ContactStatus.valueOf(row.status).labelForExport(),
+                        row.building.orEmpty(),
+                        row.room.orEmpty(),
+                        row.customResult ?: ContactStatus.valueOf(row.status).labelForExport(),
                         row.note.orEmpty(),
                         row.taskNames.orEmpty(),
                         formatTimestamp(row.updatedAt),
@@ -166,7 +186,7 @@ class LocalDataManagementRepository(
         TIMESTAMP_FORMAT.format(Instant.ofEpochMilli(value).atZone(ZoneId.systemDefault()))
 
     companion object {
-        private val HEADERS = listOf("姓名", "手机号", "联系状态", "备注", "所属任务", "最后更新时间")
+        private val HEADERS = listOf("姓名", "手机号", "栋数", "门牌号", "联系状态", "备注", "所属任务", "最后更新时间")
         private val TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
     }
 
@@ -177,5 +197,6 @@ class LocalDataManagementRepository(
         ContactStatus.INTERESTED -> "有意向"
         ContactStatus.NOT_INTERESTED -> "暂不考虑"
         ContactStatus.DO_NOT_CONTACT -> "不再联系"
+        ContactStatus.CUSTOM -> "自定义"
     }
 }

@@ -26,7 +26,10 @@ interface CustomerDao {
     suspend fun getAllOnce(): List<CustomerEntity>
 
     @Query(
-        "SELECT customers.name AS name, customers.phone AS phone, customers.status AS status, " +
+        "WITH addresses AS (SELECT DISTINCT customerId, building, room FROM list_memberships " +
+            "WHERE building IS NOT NULL OR room IS NOT NULL) " +
+            "SELECT customers.name AS name, customers.phone AS phone, customers.status AS status, " +
+            "customers.customResult, addresses.building, addresses.room, " +
             "(SELECT NULLIF(TRIM(call_records.note), '') FROM call_records " +
             "WHERE call_records.customerId = customers.id AND call_records.note IS NOT NULL " +
             "ORDER BY call_records.createdAt DESC, call_records.id DESC LIMIT 1) AS note, " +
@@ -34,7 +37,8 @@ interface CustomerDao {
             "INNER JOIN customer_lists ON customer_lists.id = list_memberships.listId " +
             "WHERE list_memberships.customerId = customers.id) AS taskNames, " +
             "customers.updatedAt AS updatedAt FROM customers " +
-            "ORDER BY customers.updatedAt DESC, customers.id DESC",
+            "LEFT JOIN addresses ON addresses.customerId = customers.id " +
+            "ORDER BY customers.updatedAt DESC, customers.id DESC, addresses.building, addresses.room",
     )
     suspend fun getExportRows(): List<CustomerExportRow>
 

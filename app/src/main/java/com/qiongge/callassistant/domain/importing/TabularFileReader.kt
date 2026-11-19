@@ -15,6 +15,8 @@ data class TabularFileData(
     val rows: List<List<String>>,
     val nameColumn: Int,
     val phoneColumn: Int,
+    val headers: List<String>,
+    val phoneColumns: List<Int>,
 )
 
 object TabularFileReader {
@@ -38,8 +40,8 @@ object TabularFileReader {
 
         val firstRow = sourceRows[firstDataIndex].take(MAX_COLUMNS)
         val headerName = findHeader(firstRow, NAME_HEADERS)
-        val headerPhone = findHeader(firstRow, PHONE_HEADERS)
-        val hasHeader = headerName >= 0 || headerPhone >= 0
+        val headerPhone = firstRow.indexOfFirst(::isPhoneHeader)
+        val hasHeader = headerName >= 0 || headerPhone >= 0 || PropertyFields.hasHeader(firstRow)
         val rows = sourceRows.drop(firstDataIndex + if (hasHeader) 1 else 0)
             .map { it.take(MAX_COLUMNS) }
         if (rows.isEmpty()) throw TabularImportException("文件只有表头，没有客户行。")
@@ -49,7 +51,14 @@ object TabularFileReader {
             ?: guessPhoneColumn(rows, columnCount)
         val nameColumn = headerName.takeIf { it in 0 until columnCount }
             ?: guessNameColumn(rows, columnCount, phoneColumn)
-        return TabularFileData(rows, nameColumn, phoneColumn)
+        val headers = firstRow.takeIf { hasHeader }.orEmpty()
+        val phoneColumns = (listOf(phoneColumn) + (0 until columnCount).filter { column ->
+            column != nameColumn && (
+                isPhoneHeader(headers.getOrNull(column).orEmpty()) ||
+                    rows.any { row -> PhoneRecognition.isPhoneCell(row.getOrNull(column).orEmpty()) }
+                )
+        }).distinct()
+        return TabularFileData(rows, nameColumn, phoneColumn, headers, phoneColumns)
     }
 
     private fun decodeText(bytes: ByteArray): String {
@@ -371,6 +380,13 @@ object TabularFileReader {
     }
 
     private val NAME_HEADERS = setOf("姓名", "客户姓名", "客户名称", "联系人", "名称", "客户", "name", "customername", "contactname")
+    private fun isPhoneHeader(value: String): Boolean {
+        val header = java.text.Normalizer.normalize(value.trim(), java.text.Normalizer.Form.NFKC)
+            .lowercase().replace(Regex("""[\s_-]+"""), "")
+        return header.trimEnd(Char::isDigit) in PHONE_HEADERS ||
+            header in setOf("备用电话", "备用手机号", "第二联系电话", "业主电话", "业主手机")
+    }
+
     private val PHONE_HEADERS = setOf("手机", "手机号", "手机号码", "电话", "电话号码", "联系电话", "联系方式", "phone", "mobile", "tel", "telephone")
 }
 

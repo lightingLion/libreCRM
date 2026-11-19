@@ -9,6 +9,7 @@ import com.qiongge.callassistant.data.local.entity.CallRecordEntity
 import com.qiongge.callassistant.data.local.entity.ListMembershipEntity
 import com.qiongge.callassistant.data.local.entity.TaskProgressEntity
 import com.qiongge.callassistant.data.local.model.TaskCustomerRow
+import com.qiongge.callassistant.data.local.model.TaskContactRecord
 import com.qiongge.callassistant.data.local.model.TaskSummary
 import kotlinx.coroutines.flow.Flow
 
@@ -55,6 +56,8 @@ interface TaskRepository {
     fun observeListsForCustomer(customerId: Long): Flow<List<CustomerListEntity>>
     fun observeProgress(taskId: Long): Flow<TaskProgressEntity?>
     fun observeContactRecords(customerId: Long): Flow<List<CallRecordEntity>>
+    fun observeRecentTaskContacts(taskId: Long): Flow<List<TaskContactRecord>>
+    fun observeCustomResults(): Flow<List<String>>
     suspend fun createTask(task: CustomerListEntity): Long
     suspend fun updateTask(task: CustomerListEntity)
     suspend fun deleteTask(taskId: Long)
@@ -63,12 +66,7 @@ interface TaskRepository {
     suspend fun removeCustomerFromAllTasks(customerId: Long)
     suspend fun saveProgress(progress: TaskProgressEntity)
     suspend fun loadProgress(taskId: Long): TaskProgressEntity?
-    suspend fun recordContact(
-        customerId: Long,
-        listId: Long?,
-        result: ContactStatus,
-        note: String?,
-    )
+    suspend fun saveContactAndProgress(record: CallRecordEntity?, progress: TaskProgressEntity?)
 }
 
 class RoomTaskRepository(
@@ -90,6 +88,11 @@ class RoomTaskRepository(
 
     override fun observeContactRecords(customerId: Long): Flow<List<CallRecordEntity>> =
         taskDao.observeCallRecords(customerId)
+
+    override fun observeRecentTaskContacts(taskId: Long): Flow<List<TaskContactRecord>> =
+        taskDao.observeRecentTaskContacts(taskId)
+
+    override fun observeCustomResults(): Flow<List<String>> = taskDao.observeCustomResults()
 
     override suspend fun createTask(task: CustomerListEntity): Long =
         taskDao.insertList(task)
@@ -140,19 +143,6 @@ class RoomTaskRepository(
     override suspend fun loadProgress(taskId: Long): TaskProgressEntity? =
         taskDao.getProgress(taskId)
 
-    override suspend fun recordContact(
-        customerId: Long,
-        listId: Long?,
-        result: ContactStatus,
-        note: String?,
-    ) {
-        taskDao.recordContact(
-            CallRecordEntity(
-                customerId = customerId,
-                listId = listId,
-                result = result,
-                note = note?.trim()?.takeIf(String::isNotEmpty),
-            ),
-        )
-    }
+    override suspend fun saveContactAndProgress(record: CallRecordEntity?, progress: TaskProgressEntity?) =
+        taskDao.saveContactAndProgress(record, progress)
 }

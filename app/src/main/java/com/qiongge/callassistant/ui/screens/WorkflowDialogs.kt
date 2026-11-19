@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.qiongge.callassistant.data.local.entity.CustomerEntity
+import com.qiongge.callassistant.ui.components.dismissKeyboardOnBlankTap
 import com.qiongge.callassistant.ui.components.RaisedCard
 import com.qiongge.callassistant.ui.theme.G2CornerShape
 
@@ -40,6 +41,7 @@ fun TaskEditorDialog(
     var taskTitle by remember(title) { mutableStateOf(initialTitle) }
 
     AlertDialog(
+        modifier = Modifier.dismissKeyboardOnBlankTap(),
         onDismissRequest = onDismiss,
         title = { Text(title, style = MaterialTheme.typography.titleLarge) },
         text = {
@@ -81,6 +83,7 @@ fun CustomerEditorDialog(
     var phone by remember(title, initialPhone) { mutableStateOf(initialPhone) }
 
     AlertDialog(
+        modifier = Modifier.dismissKeyboardOnBlankTap(),
         onDismissRequest = onDismiss,
         title = { Text(title, style = MaterialTheme.typography.titleLarge) },
         text = {
@@ -138,6 +141,7 @@ fun AddCustomerToTaskDialog(
     var phone by remember { mutableStateOf("") }
 
     AlertDialog(
+        modifier = Modifier.dismissKeyboardOnBlankTap(),
         onDismissRequest = onDismiss,
         title = {
             Text(

@@ -161,7 +161,12 @@ object OcrLayoutRebuilder {
         }
         val phoneText = phoneColumn?.let { cells.getOrNull(it).orEmpty() }
         val nameText = nameColumn?.let { cells.getOrNull(it).orEmpty() } ?: source
-        val candidates = PhoneRecognition.candidates(phoneText ?: source)
+        val candidates = if (headerRow) emptyList() else (
+            PhoneRecognition.candidates(phoneText ?: source) + cells.flatMapIndexed { index, cell ->
+                if (index == nameColumn || index == phoneColumn || index == remarkColumn) emptyList()
+                else PhoneRecognition.candidates(cell)
+            }
+        ).distinct()
         val phones = candidates.ifEmpty { listOf("") }
         val left = orderedLines.minOf { it.left }.toFloat() / imageWidth
         val top = orderedLines.minOf { it.top }.toFloat() / imageHeight

@@ -5,10 +5,7 @@ import android.net.Uri
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.fadeIn
@@ -20,14 +17,14 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -52,9 +49,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -73,26 +67,35 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.qiongge.callassistant.R
 import com.qiongge.callassistant.domain.greeting.GreetingPolicy
+import com.qiongge.callassistant.ui.components.dismissKeyboardOnBlankTap
 import com.qiongge.callassistant.ui.components.CardRouteMotion
 import com.qiongge.callassistant.ui.components.LocalCardRouteMotion
 import com.qiongge.callassistant.ui.components.RaisedCard
 import com.qiongge.callassistant.ui.navigation.MainDestination
 import com.qiongge.callassistant.ui.screens.CustomerDetailPage
+import com.qiongge.callassistant.ui.screens.DialWorkbookPushState
+import com.qiongge.callassistant.ui.theme.AppMotion
 import com.qiongge.callassistant.ui.screens.ImportListPage
 import com.qiongge.callassistant.ui.screens.LeadsPage
+import com.qiongge.callassistant.ui.screens.SettingsDialog
+import com.qiongge.callassistant.ui.theme.cardSurface
+import com.qiongge.callassistant.ui.components.MainNavigationBar
 import com.qiongge.callassistant.ui.screens.TaskDetailPage
 import com.qiongge.callassistant.ui.screens.TasksPage
 import com.qiongge.callassistant.ui.theme.G2CornerShape
@@ -138,10 +141,14 @@ private const val AUTHOR_EMAIL = "hjian9792@gmail.com"
 @OptIn(ExperimentalMaterial3Api::class)
 fun AssistantApp(viewModel: MainViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val dialWorkbook = remember { DialWorkbookPushState() }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val screenStateHolder = rememberSaveableStateHolder()
-    var selectedDrawerEntry by remember { mutableStateOf<String?>(null) }
+    var selectedDrawerEntry by rememberSaveable { mutableStateOf<String?>(null) }
+    val csvDirectoryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        uri?.let(viewModel::setCsvDirectory)
+    }
     val csvExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
         uri?.let { viewModel.exportCustomerData(it, DataExportFormat.CSV) }
     }
@@ -164,8 +171,13 @@ fun AssistantApp(viewModel: MainViewModel) {
     val drawerIsOpen = drawerState.currentValue == DrawerValue.Open ||
         drawerState.targetValue == DrawerValue.Open
     val hasDetailRoute = uiState.selectedCustomerId != null || uiState.selectedTaskId != null
-    BackHandler(enabled = drawerIsOpen || hasDetailRoute) {
-        if (drawerIsOpen) closeDrawer() else viewModel.navigateBack()
+    val isTasksHome = uiState.destination == MainDestination.TASKS && !hasDetailRoute
+    BackHandler(enabled = drawerIsOpen || dialWorkbook.open || hasDetailRoute) {
+        when {
+            drawerIsOpen -> closeDrawer()
+            dialWorkbook.open -> dialWorkbook.close()
+            else -> viewModel.navigateBack()
+        }
     }
     LaunchedEffect(drawerState.currentValue) {
         if (drawerState.currentValue == DrawerValue.Closed) {
@@ -176,7 +188,7 @@ fun AssistantApp(viewModel: MainViewModel) {
     ModalNavigationDrawer(
         drawerState = drawerState,
         gesturesEnabled = false,
-        scrimColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f),
+        scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.32f),
         drawerContent = {
             AssistantDrawer(
                 greeting = uiState.drawerGreeting
@@ -189,41 +201,60 @@ fun AssistantApp(viewModel: MainViewModel) {
             )
         },
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(drawerState.isOpen) {
-                    val edgeInset = 36.dp.toPx()
-                    val dragThreshold = 72.dp.toPx()
-                    val drawerWasOpen = drawerState.isOpen
-                    var canTrackDrag = false
-                    var totalDrag = 0f
-                    detectHorizontalDragGestures(
-                        onDragStart = { position ->
-                            // Leave Android's left and right system-back regions untouched.
-                            canTrackDrag =
-                                position.x >= edgeInset &&
-                                    position.x <= size.width - edgeInset
-                            totalDrag = 0f
-                        },
-                        onHorizontalDrag = { _, dragAmount ->
-                            if (!canTrackDrag) return@detectHorizontalDragGestures
-                            totalDrag += dragAmount
-                            if (!drawerWasOpen && totalDrag >= dragThreshold) {
-                                canTrackDrag = false
-                                openDrawer()
-                            } else if (drawerWasOpen && totalDrag <= -dragThreshold) {
-                                canTrackDrag = false
-                                closeDrawer()
-                            }
-                        },
-                        onDragEnd = { canTrackDrag = false },
-                        onDragCancel = { canTrackDrag = false },
-                    )
-                },
+        val drawerGestureModifier = if (isTasksHome || drawerState.isOpen) {
+            Modifier.pointerInput(isTasksHome, drawerState.isOpen) {
+                val edgeInset = 36.dp.toPx()
+                val dragThreshold = 72.dp.toPx()
+                val drawerWasOpen = drawerState.isOpen
+                var canTrackDrag = false
+                var totalDrag = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { position ->
+                        // Leave Android's left and right system-back regions untouched.
+                        canTrackDrag =
+                            position.x >= edgeInset &&
+                                position.x <= size.width - edgeInset
+                        totalDrag = 0f
+                    },
+                    onHorizontalDrag = { _, dragAmount ->
+                        if (!canTrackDrag) return@detectHorizontalDragGestures
+                        totalDrag += dragAmount
+                        if (isTasksHome && !drawerWasOpen && totalDrag >= dragThreshold) {
+                            canTrackDrag = false
+                            openDrawer()
+                        } else if (drawerWasOpen && totalDrag <= -dragThreshold) {
+                            canTrackDrag = false
+                            closeDrawer()
+                        }
+                    },
+                    onDragEnd = { canTrackDrag = false },
+                    onDragCancel = { canTrackDrag = false },
+                )
+            }
+        } else {
+            Modifier
+        }
+
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxSize().clipToBounds().dismissKeyboardOnBlankTap().then(drawerGestureModifier),
         ) {
+            val panelWidth = minOf(320.dp, maxWidth * 0.76f)
+            val panelPixels = with(LocalDensity.current) { panelWidth.toPx() }
+            val workbookProgress by animateFloatAsState(
+                targetValue = if (dialWorkbook.open) 1f else 0f,
+                animationSpec = remember { AppMotion.selection<Float>() },
+                finishedListener = { dialWorkbook.clearClosedContent() },
+                label = "dial workspace push",
+            )
+            dialWorkbook.content?.invoke(
+                Modifier.width(panelWidth).fillMaxHeight().graphicsLayer {
+                    translationX = panelPixels * (workbookProgress - 1f)
+                },
+            )
             Scaffold(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize()
+                    .graphicsLayer { translationX = panelPixels * workbookProgress }
+                    .then(if (dialWorkbook.open) Modifier.clearAndSetSemantics {} else Modifier),
                 containerColor = MaterialTheme.colorScheme.background,
                 contentWindowInsets = WindowInsets.navigationBars,
                 topBar = {
@@ -269,6 +300,7 @@ fun AssistantApp(viewModel: MainViewModel) {
                 },
             ) { contentPadding ->
                 val screenKey = when {
+                    uiState.selectedCustomerId != null && uiState.selectedMembershipId != null -> "task-dial-${uiState.selectedTaskId}"
                     uiState.selectedCustomerId != null -> "customer-${uiState.selectedCustomerId}"
                     uiState.selectedTaskId != null -> "task-${uiState.selectedTaskId}"
                     else -> "destination-${uiState.destination.name}"
@@ -310,9 +342,14 @@ fun AssistantApp(viewModel: MainViewModel) {
                                     customer = routeState.customer,
                                     tasks = routeState.customerTasks,
                                     contactRecords = routeState.customerContactRecords,
+                                    recentTaskContacts = routeState.recentTaskContacts,
+                                    customResults = routeState.customResults,
+                                    routeActive = route.key == screenKey,
                                     activeTask = routeState.task,
                                     taskMembers = routeState.taskCustomers,
                                     selectedMembershipId = routeState.selectedMembershipId,
+                                    preferredDialSim = routeState.preferredDialSim,
+                                    onPreferredDialSimChange = viewModel::setPreferredDialSim,
                                     automaticDialEnabled = routeState.automaticDialEnabled,
                                     automaticDialDelaySeconds = routeState.automaticDialDelaySeconds,
                                     onEdit = viewModel::updateCustomer,
@@ -323,7 +360,10 @@ fun AssistantApp(viewModel: MainViewModel) {
                                             viewModel.openCustomer(customerId, taskId, membershipId)
                                         }
                                     },
-                                    onRecordContact = viewModel::recordContact,
+                                    onSaveContact = viewModel::saveContact,
+                                    workbook = dialWorkbook,
+                                    onAutomaticDialEnabledChange = viewModel::setAutomaticDialEnabled,
+                                    onAutomaticDialDelayChange = viewModel::setAutomaticDialDelaySeconds,
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .padding(contentPadding),
@@ -368,10 +408,6 @@ fun AssistantApp(viewModel: MainViewModel) {
                                         onContinueTask = viewModel::continueTask,
                                         onRenameTask = viewModel::renameTask,
                                         onDeleteTask = viewModel::deleteTask,
-                                        automaticDialEnabled = routeState.automaticDialEnabled,
-                                        automaticDialDelaySeconds = routeState.automaticDialDelaySeconds,
-                                        onAutomaticDialEnabledChange = viewModel::setAutomaticDialEnabled,
-                                        onAutomaticDialDelayChange = viewModel::setAutomaticDialDelaySeconds,
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .padding(contentPadding),
@@ -414,11 +450,31 @@ fun AssistantApp(viewModel: MainViewModel) {
                     }
                 }
             }
+            if (dialWorkbook.content != null) {
+                Box(
+                    Modifier.matchParentSize()
+                        .graphicsLayer { translationX = panelPixels * workbookProgress }
+                        .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.25f))
+                        .clickable(onClickLabel = "关闭客户名单", onClick = dialWorkbook::close),
+                )
+            }
         }
     }
 
     selectedDrawerEntry?.let { entry ->
-        if (entry == "数据管理") {
+        if (entry == "设置") {
+            SettingsDialog(
+                themeMode = uiState.themeMode,
+                directoryLabel = uiState.csvDirectory?.label,
+                directoryMessage = uiState.directoryMessage,
+                onThemeChange = viewModel::setThemeMode,
+                onChooseDirectory = { csvDirectoryLauncher.launch(uiState.csvDirectory?.uri) },
+                onClearDirectory = { viewModel.setCsvDirectory(null) },
+                onDismiss = { selectedDrawerEntry = null },
+            )
+        } else if (entry == "数据管理") {
+            val directory = uiState.csvDirectory
+            val saveCsvAs = { csvExportLauncher.launch("客户资料_${LocalDate.now()}.csv") }
             DataManagementDialog(
                 customerCount = uiState.allCustomers.size,
                 taskCount = uiState.tasks.size,
@@ -430,30 +486,15 @@ fun AssistantApp(viewModel: MainViewModel) {
                     selectedDrawerEntry = null
                     viewModel.selectDestination(MainDestination.IMPORT)
                 },
-                onExportCsv = { csvExportLauncher.launch("客户资料_${LocalDate.now()}.csv") },
+                csvDirectoryLabel = directory?.label,
+                onExportCsv = { if (directory == null) saveCsvAs() else viewModel.exportCsvToDirectory(directory) },
+                onSaveCsvAs = saveCsvAs,
                 onExportExcel = { excelExportLauncher.launch("客户资料_${LocalDate.now()}.xlsx") },
                 onClearAll = viewModel::clearAllLocalData,
                 onDismissMessage = viewModel::dismissDataMessage,
             )
         } else if (entry == "关于作者") {
             AboutAuthorDialog(onDismiss = { selectedDrawerEntry = null })
-        } else {
-            AlertDialog(
-                onDismissRequest = { selectedDrawerEntry = null },
-                title = { Text(entry, style = MaterialTheme.typography.titleLarge) },
-                text = {
-                    Text(
-                        text = "这个入口将在后续阶段开放。",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = { selectedDrawerEntry = null }) {
-                        Text("知道了")
-                    }
-                },
-                containerColor = MaterialTheme.colorScheme.surface,
-            )
         }
     }
 }
@@ -486,7 +527,7 @@ private fun AboutAuthorDialog(onDismiss: () -> Unit) {
                 Text("关闭")
             }
         },
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.cardSurface,
     )
 }
 
@@ -499,7 +540,9 @@ private fun DataManagementDialog(
     message: String?,
     onDismiss: () -> Unit,
     onImport: () -> Unit,
+    csvDirectoryLabel: String?,
     onExportCsv: () -> Unit,
+    onSaveCsvAs: () -> Unit,
     onExportExcel: () -> Unit,
     onClearAll: () -> Unit,
     onDismissMessage: () -> Unit,
@@ -515,7 +558,11 @@ private fun DataManagementDialog(
                     Text(if (hasImportDraft) "继续核对当前导入草稿" else "导入 CSV / Excel")
                 }
                 OutlinedButton(onClick = onExportCsv, modifier = Modifier.fillMaxWidth(), enabled = !busy) {
-                    Text("导出 CSV")
+                    Text(if (csvDirectoryLabel == null) "导出 CSV" else "导出 CSV 到默认目录")
+                }
+                if (csvDirectoryLabel != null) {
+                    Text(csvDirectoryLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = onSaveCsvAs, enabled = !busy) { Text("CSV 另存为") }
                 }
                 OutlinedButton(onClick = onExportExcel, modifier = Modifier.fillMaxWidth(), enabled = !busy) {
                     Text("导出 Excel（.xlsx）")
@@ -536,7 +583,7 @@ private fun DataManagementDialog(
             }
         },
         confirmButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("完成") } },
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.cardSurface,
     )
     if (showClearConfirmation) {
         AlertDialog(
@@ -651,125 +698,5 @@ private fun AssistantDrawer(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-    }
-}
-
-@Composable
-private fun MainNavigationBar(
-    selected: MainDestination,
-    onSelect: (MainDestination) -> Unit,
-) {
-    val destinations = listOf(
-        Triple(MainDestination.TASKS, "已有任务", R.drawable.ic_folder_open),
-        Triple(MainDestination.IMPORT, "导入名单", R.drawable.ic_image_add),
-        Triple(MainDestination.LEADS, "线索管理", R.drawable.ic_people),
-    )
-    NavigationBar(
-        containerColor = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        tonalElevation = 0.dp,
-        windowInsets = WindowInsets.navigationBars,
-    ) {
-        destinations.forEach { (destination, label, iconRes) ->
-            val isSelected = destination == selected
-            val interactionSource = remember { MutableInteractionSource() }
-            val pressed by interactionSource.collectIsPressedAsState()
-            NavigationBarItem(
-                selected = isSelected,
-                onClick = { onSelect(destination) },
-                icon = {
-                    NavigationIconWell(
-                        iconRes = iconRes,
-                        label = label,
-                        selected = isSelected,
-                        pressed = pressed,
-                    )
-                },
-                label = {
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal,
-                    )
-                },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    indicatorColor = MaterialTheme.colorScheme.surface,
-                ),
-                interactionSource = interactionSource,
-            )
-        }
-    }
-}
-
-@Composable
-private fun NavigationIconWell(
-    iconRes: Int,
-    label: String,
-    selected: Boolean,
-    pressed: Boolean,
-) {
-    val selectionProgress by animateFloatAsState(
-        targetValue = if (selected) 1f else 0f,
-        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
-        label = "navigationSelection",
-    )
-    val pressProgress by animateFloatAsState(
-        targetValue = if (pressed) 1f else 0f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMedium,
-        ),
-        label = "navigationPress",
-    )
-    val shadowElevation by animateDpAsState(
-        targetValue = if (selected && !pressed) 0.8.dp else 0.dp,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMedium,
-        ),
-        label = "navigationShadow",
-    )
-    val surfaceMix = (selectionProgress * 0.76f + pressProgress * 0.16f).coerceIn(0f, 1f)
-    val insetMix = (selectionProgress * 0.52f + pressProgress * 0.3f).coerceIn(0f, 0.72f)
-    val shape = G2CornerShape(15.dp)
-
-    Box(
-        modifier = Modifier
-            .size(38.dp)
-            .shadow(
-                elevation = shadowElevation,
-                shape = shape,
-                ambientColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
-                spotColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f),
-            )
-            .background(
-                color = lerp(
-                    MaterialTheme.colorScheme.surface,
-                    MaterialTheme.colorScheme.surfaceVariant,
-                    surfaceMix,
-                ),
-                shape = shape,
-            )
-            .border(
-                width = 1.5.dp,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = insetMix),
-                shape = shape,
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            painter = painterResource(iconRes),
-            contentDescription = label,
-            tint = lerp(
-                MaterialTheme.colorScheme.onSurfaceVariant,
-                MaterialTheme.colorScheme.primary,
-                selectionProgress,
-            ),
-            modifier = Modifier.size(22.dp),
-        )
     }
 }

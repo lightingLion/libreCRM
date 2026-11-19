@@ -13,6 +13,7 @@ import com.qiongge.callassistant.data.local.entity.ImportRecordEntity
 import com.qiongge.callassistant.data.local.entity.ListMembershipEntity
 import com.qiongge.callassistant.data.local.entity.TaskProgressEntity
 import com.qiongge.callassistant.data.local.model.TaskCustomerRow
+import com.qiongge.callassistant.data.local.model.TaskContactRecord
 import com.qiongge.callassistant.data.local.model.TaskSummary
 import kotlinx.coroutines.flow.Flow
 
@@ -45,7 +46,8 @@ interface TaskDao {
             "customers.id AS customer_id, customers.name AS customer_name, " +
             "customers.phone AS customer_phone, customers.status AS customer_status, " +
             "customers.createdAt AS customer_createdAt, " +
-            "customers.updatedAt AS customer_updatedAt " +
+            "customers.updatedAt AS customer_updatedAt, customers.customResult AS customer_customResult, " +
+            "list_memberships.building, list_memberships.room " +
             "FROM list_memberships " +
             "INNER JOIN customers ON customers.id = list_memberships.customerId " +
             "WHERE list_memberships.listId = :listId " +
@@ -106,22 +108,49 @@ interface TaskDao {
     )
     fun observeCallRecords(customerId: Long): Flow<List<CallRecordEntity>>
 
-    @Query("UPDATE customers SET status = :status, updatedAt = :updatedAt WHERE id = :customerId")
+    @Query(
+        "SELECT call_records.*, customers.name AS customerName, customers.phone AS phone " +
+            "FROM call_records JOIN customers ON customers.id = call_records.customerId " +
+            "WHERE call_records.listId = :listId ORDER BY call_records.createdAt DESC, call_records.id DESC LIMIT 10",
+    )
+    fun observeRecentTaskContacts(listId: Long): Flow<List<TaskContactRecord>>
+
+    @Query(
+        "SELECT customResult FROM call_records WHERE customResult IS NOT NULL " +
+            "GROUP BY customResult ORDER BY MAX(id) DESC LIMIT 12",
+    )
+    fun observeCustomResults(): Flow<List<String>>
+
+    @Query(
+        "UPDATE customers SET status = :status, customResult = :customResult, updatedAt = :updatedAt " +
+            "WHERE id = :customerId",
+    )
     suspend fun updateCustomerContactStatus(
         customerId: Long,
         status: String,
+        customResult: String?,
         updatedAt: Long,
     )
 
     @Transaction
-    suspend fun recordContact(record: CallRecordEntity) {
-        updateCustomerContactStatus(
-            customerId = record.customerId,
-            status = record.result.name,
-            updatedAt = record.createdAt,
-        )
-        insertCallRecord(record)
+    suspend fun saveContactAndProgress(record: CallRecordEntity?, progress: TaskProgressEntity?) {
+        if (record != null) {
+            updateCustomerContactStatus(
+                customerId = record.customerId,
+                status = record.result.name,
+                customResult = record.customResult,
+                updatedAt = record.createdAt,
+            )
+            insertCallRecord(record)
+        }
+        if (progress != null) {
+            check(progress.currentMembershipId?.let { hasMembership(progress.listId, it) } == true)
+            saveProgress(progress)
+        }
     }
+
+    @Query("SELECT EXISTS(SELECT 1 FROM list_memberships WHERE listId = :listId AND id = :membershipId)")
+    suspend fun hasMembership(listId: Long, membershipId: Long): Boolean
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertFollowUp(followUp: FollowUpEntity): Long

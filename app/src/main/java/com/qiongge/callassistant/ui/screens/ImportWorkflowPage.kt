@@ -47,7 +47,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.FileProvider
 import com.qiongge.callassistant.data.local.entity.CustomerEntity
@@ -64,7 +63,7 @@ import com.qiongge.callassistant.ui.components.InsetPill
 import com.qiongge.callassistant.ui.components.InsetSurface
 import com.qiongge.callassistant.ui.components.RaisedCard
 import com.qiongge.callassistant.ui.theme.G2CornerShape
-import com.qiongge.callassistant.ui.theme.NumberTypography
+import com.qiongge.callassistant.ui.theme.CountTypography
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -500,7 +499,7 @@ fun ImportListPage(
 private fun ImportCount(label: String, count: Int, modifier: Modifier = Modifier) {
     InsetSurface(modifier = modifier) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-            Text(count.toString(), style = NumberTypography.copy(fontSize = 22.sp, lineHeight = 28.sp))
+            Text(count.toString(), style = CountTypography)
             Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -576,8 +575,18 @@ private fun ImportReviewRowCard(
 ) {
     var name by remember(row.id) { mutableStateOf(row.name) }
     var phone by remember(row.id) { mutableStateOf(row.phone) }
+    var building by remember(row.id) { mutableStateOf(row.building.orEmpty()) }
+    var room by remember(row.id) { mutableStateOf(row.room.orEmpty()) }
     var editingSkipped by remember(row.id) { mutableStateOf(false) }
-    val hasPendingEdits = name != row.name || phone != row.phone
+    fun editedRow() = row.copy(
+        name = name,
+        phone = phone,
+        building = building.trim().ifEmpty { null },
+        room = room.trim().ifEmpty { null },
+        reviewed = false,
+    )
+    val hasPendingEdits = name != row.name || phone != row.phone ||
+        building.trim() != row.building.orEmpty() || room.trim() != row.room.orEmpty()
 
     RaisedCard(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(16.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
@@ -634,7 +643,7 @@ private fun ImportReviewRowCard(
                     value = name,
                     onValueChange = {
                         name = it.take(40)
-                        onUpdate(row.copy(name = name, phone = phone, reviewed = false))
+                        onUpdate(editedRow())
                     },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("客户姓名") },
@@ -647,10 +656,7 @@ private fun ImportReviewRowCard(
                         phone = it.take(32)
                         val sameNumber = PhoneRecognition.comparableDigits(phone) == PhoneRecognition.comparableDigits(row.phone)
                         onUpdate(
-                            row.copy(
-                                name = name,
-                                phone = phone,
-                                reviewed = false,
+                            editedRow().copy(
                                 duplicateMode = if (sameNumber) row.duplicateMode else null,
                                 duplicateCustomerId = if (sameNumber) row.duplicateCustomerId else null,
                             ),
@@ -661,6 +667,30 @@ private fun ImportReviewRowCard(
                     singleLine = true,
                     enabled = enabled,
                 )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = building,
+                        onValueChange = {
+                            building = it.take(80)
+                            onUpdate(editedRow())
+                        },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("栋数") },
+                        singleLine = true,
+                        enabled = enabled,
+                    )
+                    OutlinedTextField(
+                        value = room,
+                        onValueChange = {
+                            room = it.take(80)
+                            onUpdate(editedRow())
+                        },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("门牌号") },
+                        singleLine = true,
+                        enabled = enabled,
+                    )
+                }
                 val valid = name.isNotBlank() && PhoneRecognition.isMainlandMobile(phone)
                 InsetPill(
                     when {

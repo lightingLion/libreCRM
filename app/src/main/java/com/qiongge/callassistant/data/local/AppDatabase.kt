@@ -33,7 +33,7 @@ import com.qiongge.callassistant.data.local.entity.TaskProgressEntity
         ImportDraftImageEntity::class,
         ImportDraftRowEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(ContactStatusConverter::class)
@@ -82,6 +82,17 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `import_draft_rows` ADD COLUMN `sourceFileName` TEXT")
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `customers` ADD COLUMN `customResult` TEXT")
+                db.execSQL("ALTER TABLE `call_records` ADD COLUMN `customResult` TEXT")
+                db.execSQL("ALTER TABLE `list_memberships` ADD COLUMN `building` TEXT")
+                db.execSQL("ALTER TABLE `list_memberships` ADD COLUMN `room` TEXT")
+                db.execSQL("ALTER TABLE `import_draft_rows` ADD COLUMN `building` TEXT")
+                db.execSQL("ALTER TABLE `import_draft_rows` ADD COLUMN `room` TEXT")
             }
         }
 

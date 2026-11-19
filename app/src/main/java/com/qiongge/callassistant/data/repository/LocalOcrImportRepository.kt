@@ -18,6 +18,7 @@ import com.qiongge.callassistant.data.local.entity.ListMembershipEntity
 import com.qiongge.callassistant.data.local.entity.TaskProgressEntity
 import com.qiongge.callassistant.data.local.model.ImportDraftSnapshot
 import com.qiongge.callassistant.domain.importing.PhoneRecognition
+import com.qiongge.callassistant.domain.importing.PropertyFields
 import com.qiongge.callassistant.domain.importing.TabularFileReader
 import com.qiongge.callassistant.domain.importing.TabularImportException
 import com.qiongge.callassistant.ocr.engine.LocalPaddleOcrEngine
@@ -162,32 +163,37 @@ class LocalOcrImportRepository(
             throw ImportWorkflowException(exception.message ?: "文件内容无法识别。")
         }
         val nextOrder = dao.nextRowOrder()
-        val rows = table.rows.mapIndexed { index, cells ->
+        val rows = table.rows.flatMapIndexed { index, cells ->
             val name = cells.getOrNull(table.nameColumn).orEmpty().trim().take(40)
-            val phoneText = cells.getOrNull(table.phoneColumn).orEmpty().trim()
-            val phone = PhoneRecognition.candidates(phoneText)
-                .firstOrNull()
-                ?.let(PhoneRecognition::normalizeForEditing)
-                ?: PhoneRecognition.normalizeForEditing(phoneText).take(32)
-            ImportDraftRowEntity(
-                sourceImageId = null,
-                sortOrder = nextOrder + index,
-                name = name,
-                phone = phone,
-                sourceText = cells.joinToString(" | ") { it.trim() },
-                sourceCells = OcrSourceCellCodec.encode(cells),
-                sourceFileName = fileName,
-                sourceLeft = null,
-                sourceTop = null,
-                sourceRight = null,
-                sourceBottom = null,
-                confidence = null,
-                reviewed = name.isNotBlank() && PhoneRecognition.isMainlandMobile(phone),
-                skipped = name.isBlank() || phone.isBlank(),
-                duplicateMode = null,
-                duplicateCustomerId = null,
-                skipReason = if (name.isBlank() || phone.isBlank()) ImportSkipReason.INCOMPLETE else null,
-            )
+            val phones = table.phoneColumns.flatMap { column ->
+                PhoneRecognition.candidates(cells.getOrNull(column).orEmpty())
+            }.distinct().ifEmpty {
+                listOf(PhoneRecognition.normalizeForEditing(cells.getOrNull(table.phoneColumn).orEmpty()).take(32))
+            }
+            val property = PropertyFields.recognize(cells, table.headers)
+            phones.map { phone ->
+                ImportDraftRowEntity(
+                    sourceImageId = null,
+                    sortOrder = nextOrder + index,
+                    name = name,
+                    phone = phone,
+                    building = property.building,
+                    room = property.room,
+                    sourceText = cells.joinToString(" | ") { it.trim() },
+                    sourceCells = OcrSourceCellCodec.encode(cells),
+                    sourceFileName = fileName,
+                    sourceLeft = null,
+                    sourceTop = null,
+                    sourceRight = null,
+                    sourceBottom = null,
+                    confidence = null,
+                    reviewed = name.isNotBlank() && PhoneRecognition.isMainlandMobile(phone),
+                    skipped = name.isBlank() || phone.isBlank(),
+                    duplicateMode = null,
+                    duplicateCustomerId = null,
+                    skipReason = if (name.isBlank() || phone.isBlank()) ImportSkipReason.INCOMPLETE else null,
+                )
+            }
         }
         val title = fileName.substringBeforeLast('.', fileName).take(60).ifBlank { "导入名单" }
         ensureDraft(title)
@@ -258,38 +264,55 @@ class LocalOcrImportRepository(
         }
         if (rowsWithCells.isEmpty()) throw ImportWorkflowException("${sourceLabel}没有可映射的识别列，请重新读取文件。")
 
-        val mappedRows = rowsWithCells.map { (row, cells) ->
+        val groups = rowsWithCells.groupBy { (row, _) ->
+            if (row.sourceTop != null) listOf(row.sourceTop, row.sourceLeft, row.sourceRight, row.sourceBottom)
+            else listOf(row.sortOrder)
+        }
+        val mappedRows = groups.values.flatMap { group ->
+            val (template, cells) = group.first()
             val nameCell = cells.getOrNull(nameColumn).orEmpty().trim()
             val phoneCell = cells.getOrNull(phoneColumn).orEmpty().trim()
             val headerRow = isFieldHeader(nameCell) || isFieldHeader(phoneCell)
             val name = if (headerRow) "" else nameCell.take(40)
-            val phoneText = if (headerRow) "" else phoneCell
-            val phone = PhoneRecognition.candidates(phoneText)
-                .firstOrNull()
-                ?.let(PhoneRecognition::normalizeForEditing)
-                ?: PhoneRecognition.normalizeForEditing(phoneText).take(32)
-            val preserveManualSkip = row.skipped && (
-                row.skipReason == ImportSkipReason.MANUAL ||
-                    (row.skipReason == null && row.name.isNotBlank() && row.phone.isNotBlank())
+            val phones = if (headerRow) listOf("") else (
+                PhoneRecognition.candidates(phoneCell) +
+                    cells.filterIndexed { index, value ->
+                        index != nameColumn && index != phoneColumn && PhoneRecognition.isPhoneCell(value)
+                    }.flatMap(PhoneRecognition::candidates) +
+                    group.mapNotNull { (row, _) ->
+                        PhoneRecognition.comparableDigits(row.phone)?.takeIf { number ->
+                            cells.indices.any { index ->
+                                index != nameColumn && number in PhoneRecognition.candidates(cells[index])
+                            }
+                        }
+                    }
+                ).distinct().ifEmpty { listOf(PhoneRecognition.normalizeForEditing(phoneCell).take(32)) }
+            val remaining = group.map { it.first }.toMutableList()
+            val retained = phones.map { phone ->
+                remaining.firstOrNull { it.phone == phone }?.also { remaining.remove(it) }
+            }
+            phones.zip(retained).map { (phone, matchingRow) ->
+                val row = matchingRow ?: remaining.removeFirstOrNull() ?: template.copy(id = 0)
+                val preserveManualSkip = row.id != 0L && row.skipped && row.skipReason == ImportSkipReason.MANUAL
+                val incomplete = headerRow || name.isBlank() || phone.isBlank()
+                row.copy(
+                    name = name,
+                    phone = phone,
+                    reviewed = name.isNotBlank() && PhoneRecognition.isMainlandMobile(phone) && !preserveManualSkip,
+                    skipped = preserveManualSkip || incomplete,
+                    duplicateMode = null,
+                    duplicateCustomerId = null,
+                    skipReason = when {
+                        preserveManualSkip -> ImportSkipReason.MANUAL
+                        incomplete -> ImportSkipReason.INCOMPLETE
+                        else -> null
+                    },
                 )
-            val incomplete = headerRow || name.isBlank() || phone.isBlank()
-
-            row.copy(
-                name = name,
-                phone = phone,
-                reviewed = name.isNotBlank() && PhoneRecognition.isMainlandMobile(phone) && !preserveManualSkip,
-                skipped = preserveManualSkip || incomplete,
-                duplicateMode = null,
-                duplicateCustomerId = null,
-                skipReason = when {
-                    preserveManualSkip -> ImportSkipReason.MANUAL
-                    incomplete -> ImportSkipReason.INCOMPLETE
-                    else -> null
-                },
-            )
+            }
         }
         database.withTransaction {
-            mappedRows.forEach { row -> dao.updateRow(row) }
+            rowsWithCells.forEach { (row, _) -> dao.deleteRow(row.id) }
+            dao.insertRows(mappedRows.map { it.copy(id = 0) })
             dao.getDraft()?.let { dao.updateDraft(it.copy(updatedAt = System.currentTimeMillis())) }
         }
         reEvaluateDuplicatePhoneSkips()
@@ -372,7 +395,13 @@ class LocalOcrImportRepository(
                     throw ImportWorkflowException("同一已有客户被重复加入名单，请跳过重复行后再导入。")
                 }
                 val membershipId = taskDao.insertMembership(
-                    ListMembershipEntity(listId = newListId, customerId = customerId, sortOrder = nextOrder++),
+                    ListMembershipEntity(
+                        listId = newListId,
+                        customerId = customerId,
+                        sortOrder = nextOrder++,
+                        building = row.building,
+                        room = row.room,
+                    ),
                 )
                 if (nextOrder == 1) {
                     taskDao.saveProgress(TaskProgressEntity(listId = newListId, currentMembershipId = membershipId, updatedAt = now))
@@ -422,12 +451,16 @@ class LocalOcrImportRepository(
             structuredRows = recognized.structuredRows,
         )
         var sortOrder = dao.nextRowOrder()
+        val headers = parsed.firstOrNull { PropertyFields.hasHeader(it.cells) }?.cells.orEmpty()
         return parsed.map { row ->
+            val property = PropertyFields.recognize(row.cells, headers)
             ImportDraftRowEntity(
                 sourceImageId = imageId,
                 sortOrder = sortOrder++,
                 name = row.name,
                 phone = row.phone,
+                building = property.building,
+                room = property.room,
                 sourceText = row.sourceText,
                 sourceCells = OcrSourceCellCodec.encode(row.cells),
                 sourceLeft = row.left,
