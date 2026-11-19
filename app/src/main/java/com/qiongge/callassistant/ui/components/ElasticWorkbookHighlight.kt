@@ -37,6 +37,7 @@ internal fun elasticWorkbookHighlight(
     drag: WorkbookHighlightDrag,
     enabled: Boolean,
     onPick: (Long) -> Unit,
+    onDragStart: () -> Unit,
 ): Modifier {
     if (selectedKey == null) return Modifier
 
@@ -59,7 +60,7 @@ internal fun elasticWorkbookHighlight(
                         follow?.cancel()
                         paintedTop = Float.NaN
                     }
-                    paintedTop.isNaN() || coroutineContext[MotionDurationScale]?.scaleFactor == 0f -> {
+                    paintedTop.isNaN() || drag.recenter != null || coroutineContext[MotionDurationScale]?.scaleFactor == 0f -> {
                         follow?.cancel()
                         paintedTop = next
                     }
@@ -70,7 +71,7 @@ internal fun elasticWorkbookHighlight(
                             val frame = withFrameNanos { it }
                             val goal = target ?: break
                             val scale = coroutineContext[MotionDurationScale]?.scaleFactor ?: 1f
-                            if (scale == 0f) {
+                            if (scale == 0f || drag.recenter != null) {
                                 paintedTop = goal
                                 break
                             }
@@ -91,7 +92,7 @@ internal fun elasticWorkbookHighlight(
         }
     }
 
-    return workbookDragInput(scroll, drag, selectedKey, enabled, horizontalPadding, { paintedTop }, onPick)
+    return workbookDragInput(scroll, drag, selectedKey, enabled, horizontalPadding, { paintedTop }, onPick, onDragStart)
         .drawWithContent {
         val layout = scroll.layoutInfo
         val selected = layout.visibleItemsInfo.firstOrNull { it.key == selectedKey }
@@ -100,13 +101,13 @@ internal fun elasticWorkbookHighlight(
             val height: Float
             val top: Float
             if (dragging) {
-                val extension = abs(drag.stretch) * drag.height
-                height = drag.height + extension
-                top = drag.center - drag.height / 2 - if (drag.stretch > 0f) extension else 0f
+                height = drag.height
+                top = drag.center - height / 2
             } else {
                 checkNotNull(selected)
                 val actualTop = (selected.offset - layout.viewportStartOffset).toFloat()
-                val offset = if (paintedTop.isNaN()) 0f else (paintedTop - actualTop).coerceIn(-maxLag, maxLag)
+                val offset = if (paintedTop.isNaN() || drag.recenter != null) 0f
+                    else (paintedTop - actualTop).coerceIn(-maxLag, maxLag)
                 val stretch = selected.size * 0.09f * (abs(offset) / maxLag)
                 top = actualTop + offset - if (offset < 0f) stretch else 0f
                 height = selected.size + stretch

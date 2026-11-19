@@ -2,6 +2,9 @@ package com.qiongge.callassistant.ui.screens
 
 import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.animateScrollBy
@@ -24,6 +27,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -37,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -49,31 +54,62 @@ import com.qiongge.callassistant.ui.components.elasticWorkbookHighlight
 import com.qiongge.callassistant.ui.components.WorkbookHighlightDrag
 import com.qiongge.callassistant.ui.components.WorkbookDragMotion
 import com.qiongge.callassistant.ui.components.centerIn
+import com.qiongge.callassistant.ui.components.projectedDragPosition
 import com.qiongge.callassistant.ui.theme.AppSpacing
+import com.qiongge.callassistant.ui.theme.AppMotion
 import com.qiongge.callassistant.ui.theme.NumberTypography
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-internal class DialWorkbookPushState {
+internal class DialWorkbookPushState(private val scope: CoroutineScope) {
     var open by mutableStateOf(false)
+        private set
+    var progress by mutableFloatStateOf(0f)
         private set
     var content by mutableStateOf<(@Composable (Modifier) -> Unit)?>(null)
         private set
+    private var settling: Job? = null
+    private var dragOrigin = 0f
 
-    fun show(panel: @Composable (Modifier) -> Unit) {
-        content = panel
-        open = true
+    fun show(interactive: Boolean, panel: @Composable (Modifier) -> Unit) {
+        if (content == null) content = panel
+        if (interactive) beginDrag() else settle(true)
     }
 
-    fun close() {
-        open = false
+    fun beginDrag() {
+        settling?.cancel()
+        dragOrigin = progress
     }
 
-    fun clearClosedContent() {
-        if (!open) content = null
+    fun dragBy(distance: Float, width: Float) {
+        if (width > 0f) progress = (dragOrigin + distance / width).coerceIn(0f, 1f)
+    }
+
+    fun finishDrag(velocity: Float, width: Float, released: Boolean) {
+        val speed = if (width > 0f && released) velocity / width else 0f
+        val projected = projectedDragPosition(progress, speed, 0.28f)
+        val threshold = if (open) 0.56f else 0.34f
+        settle(if (released) projected >= threshold else open, speed)
+    }
+
+    fun close() = settle(false)
+
+    private fun settle(show: Boolean, velocity: Float = 0f) {
+        settling?.cancel()
+        open = show
+        settling = scope.launch {
+            animate(
+                progress, if (show) 1f else 0f,
+                initialVelocity = velocity.coerceIn(-4f, 4f),
+                animationSpec = AppMotion.selection(),
+            ) { value, _ -> progress = value.coerceIn(0f, 1f) }
+            if (!show) content = null
+        }
     }
 }
 
@@ -93,22 +129,34 @@ internal fun DialWorkbookPanel(
     val scroll = rememberLazyListState(currentIndex.coerceAtLeast(0))
     val drag = remember { WorkbookHighlightDrag() }
     val scope = rememberCoroutineScope()
+    fun centerOn(key: Long) {
+        drag.recenter?.cancel()
+        drag.recenter = scope.launch {
+            try {
+                val index = members.indexOfFirst { it.membershipId == key }
+                if (index < 0) return@launch
+                if (scroll.layoutInfo.visibleItemsInfo.none { it.key == key }) {
+                    scroll.animateScrollToItem(index)
+                }
+                // The previously expanded row can still be shrinking during the first scroll.
+                repeat(2) {
+                    val layout = scroll.layoutInfo
+                    val item = layout.visibleItemsInfo.firstOrNull { it.key == key } ?: return@launch
+                    val distance = item.centerIn(layout) - (layout.viewportEndOffset - layout.viewportStartOffset) / 2f
+                    if (abs(distance) <= 1f) return@launch
+                    if (distance < 0f && !scroll.canScrollBackward || distance > 0f && !scroll.canScrollForward) return@launch
+                    scroll.animateScrollBy(distance, animationSpec = AppMotion.workbookCentering())
+                }
+            } finally {
+                if (drag.recenter === coroutineContext[Job]) drag.recenter = null
+            }
+        }
+    }
     val recenter by rememberUpdatedState<() -> Boolean> {
         if (selectedKey == null || saving || drag.center.isFinite()) {
             false
         } else {
-            drag.recenter?.cancel()
-            drag.recenter = scope.launch {
-                val index = members.indexOfFirst { it.membershipId == selectedKey }
-                if (index < 0) return@launch
-                if (scroll.layoutInfo.visibleItemsInfo.none { it.key == selectedKey }) {
-                    scroll.animateScrollToItem(index)
-                }
-                val layout = scroll.layoutInfo
-                val item = layout.visibleItemsInfo.firstOrNull { it.key == selectedKey } ?: return@launch
-                val distance = item.offset + item.size / 2f - (layout.viewportStartOffset + layout.viewportEndOffset) / 2f
-                if (abs(distance) > 1f) scroll.animateScrollBy(distance)
-            }
+            centerOn(selectedKey)
             true
         }
     }
@@ -122,7 +170,7 @@ internal fun DialWorkbookPanel(
             }
         } else emptyList()
     }
-    LaunchedEffect(selectedKey, scroll) {
+    LaunchedEffect(scroll) {
         if (selectedKey == null) return@LaunchedEffect
         val distanceToCenter = snapshotFlow {
             val layout = scroll.layoutInfo
@@ -159,13 +207,17 @@ internal fun DialWorkbookPanel(
                     elasticWorkbookHighlight(
                         scroll, selectedKey, MaterialTheme.colorScheme.secondaryContainer, AppSpacing.md, drag,
                         enabled = !saving,
-                        onPick = { key -> members.firstOrNull { it.membershipId == key }?.let(onOpen) },
+                        onPick = { key ->
+                            if (key != selectedKey) members.firstOrNull { it.membershipId == key }?.let(onOpen)
+                            centerOn(key)
+                        },
+                        onDragStart = { expandedId = null },
                     ),
                 ),
                 contentPadding = PaddingValues(horizontal = AppSpacing.md, vertical = AppSpacing.xs),
                 verticalArrangement = Arrangement.spacedBy(AppSpacing.joined),
             ) {
-                itemsIndexed(members, key = { _, row -> row.membershipId }) { index, row ->
+                itemsIndexed(members, key = { _, row -> row.membershipId }, contentType = { _, _ -> "customer" }) { index, row ->
                     val expanded = expandedId == row.membershipId
                     val isCurrent = row.membershipId == selectedKey
                     Surface(
@@ -184,7 +236,7 @@ internal fun DialWorkbookPanel(
                             scaleY = scaleX
                             val normalized = if (item == null || halfHeight <= 0f) 0f
                                 else abs(item.offset + item.size / 2f - center) / halfHeight
-                            val edge = ((normalized - 0.16f) / 0.84f).coerceIn(0f, 1f)
+                            val edge = ((normalized - 0.55f) / 0.45f).coerceIn(0f, 1f)
                             val fade = if (isCurrent) 0f else edge * edge * (3f - 2f * edge) * (1f - focused)
                             alpha = 1f - 0.66f * fade
                             renderEffect = blurSteps.getOrNull((fade * blurSteps.lastIndex).roundToInt())
@@ -197,11 +249,18 @@ internal fun DialWorkbookPanel(
                         Column {
                             Row(
                                 Modifier.fillMaxWidth()
+                                    .then(if (isCurrent) Modifier.onSizeChanged { drag.headerHeight = it.height } else Modifier)
                                     .semantics { stateDescription = if (expanded) "已展开" else "已收起" }
                                     .clickable(
                                         enabled = !saving,
                                         onClickLabel = if (expanded) "收起资料" else "展开资料",
-                                    ) { expandedId = if (expanded) null else row.membershipId }
+                                    ) {
+                                        expandedId = if (expanded) null else row.membershipId
+                                        if (!expanded && !isCurrent) {
+                                            drag.glideTo(scroll, scope, row.membershipId, selectedKey)
+                                            onOpen(row)
+                                        }
+                                    }
                                     .heightIn(min = AppSpacing.touchTarget)
                                     .padding(horizontal = AppSpacing.lg, vertical = AppSpacing.sm),
                                 horizontalArrangement = Arrangement.spacedBy(AppSpacing.md),
@@ -228,7 +287,11 @@ internal fun DialWorkbookPanel(
                                 Text(if (expanded) "−" else "+", style = MaterialTheme.typography.titleMedium,
                                     modifier = Modifier.clearAndSetSemantics {})
                             }
-                            AnimatedVisibility(visible = expanded) {
+                            AnimatedVisibility(
+                                visible = expanded,
+                                enter = expandVertically(animationSpec = AppMotion.selection()),
+                                exit = shrinkVertically(animationSpec = AppMotion.selection()),
+                            ) {
                                 Column(
                                     Modifier.fillMaxWidth().padding(horizontal = AppSpacing.lg),
                                     verticalArrangement = Arrangement.spacedBy(AppSpacing.xs),

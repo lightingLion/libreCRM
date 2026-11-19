@@ -5,7 +5,6 @@ import android.net.Uri
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.fadeIn
@@ -90,7 +89,7 @@ import com.qiongge.callassistant.ui.components.RaisedCard
 import com.qiongge.callassistant.ui.navigation.MainDestination
 import com.qiongge.callassistant.ui.screens.CustomerDetailPage
 import com.qiongge.callassistant.ui.screens.DialWorkbookPushState
-import com.qiongge.callassistant.ui.theme.AppMotion
+import com.qiongge.callassistant.ui.screens.dialHorizontalDrag
 import com.qiongge.callassistant.ui.screens.ImportListPage
 import com.qiongge.callassistant.ui.screens.LeadsPage
 import com.qiongge.callassistant.ui.screens.SettingsDialog
@@ -141,9 +140,9 @@ private const val AUTHOR_EMAIL = "hjian9792@gmail.com"
 @OptIn(ExperimentalMaterial3Api::class)
 fun AssistantApp(viewModel: MainViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val dialWorkbook = remember { DialWorkbookPushState() }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val dialWorkbook = remember(scope) { DialWorkbookPushState(scope) }
     val screenStateHolder = rememberSaveableStateHolder()
     var selectedDrawerEntry by rememberSaveable { mutableStateOf<String?>(null) }
     val csvDirectoryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -240,223 +239,236 @@ fun AssistantApp(viewModel: MainViewModel) {
         ) {
             val panelWidth = minOf(320.dp, maxWidth * 0.76f)
             val panelPixels = with(LocalDensity.current) { panelWidth.toPx() }
-            val workbookProgress by animateFloatAsState(
-                targetValue = if (dialWorkbook.open) 1f else 0f,
-                animationSpec = remember { AppMotion.selection<Float>() },
-                finishedListener = { dialWorkbook.clearClosedContent() },
-                label = "dial workspace push",
-            )
-            dialWorkbook.content?.invoke(
-                Modifier.width(panelWidth).fillMaxHeight().graphicsLayer {
-                    translationX = panelPixels * (workbookProgress - 1f)
-                },
-            )
-            Scaffold(
-                modifier = Modifier.fillMaxSize()
-                    .graphicsLayer { translationX = panelPixels * workbookProgress }
-                    .then(if (dialWorkbook.open) Modifier.clearAndSetSemantics {} else Modifier),
-                containerColor = MaterialTheme.colorScheme.background,
-                contentWindowInsets = WindowInsets.navigationBars,
-                topBar = {
-                    TopAppBar(
-                        title = {
-                            Text(
-                                text = uiState.customer?.name
-                                    ?: uiState.task?.title
-                                    ?: uiState.destination.title,
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        },
-                        navigationIcon = {
-                            IconButton(
-                                onClick = {
-                                    if (hasDetailRoute) viewModel.navigateBack() else openDrawer()
-                                },
-                                modifier = Modifier.size(48.dp),
-                            ) {
-                                Icon(
-                                    painter = painterResource(
-                                        if (hasDetailRoute) R.drawable.ic_arrow_back else R.drawable.ic_menu,
-                                    ),
-                                    contentDescription = if (hasDetailRoute) "返回" else "打开侧边菜单",
-                                    tint = MaterialTheme.colorScheme.onSurface,
-                                )
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.background,
-                            scrolledContainerColor = MaterialTheme.colorScheme.background,
-                        ),
-                    )
-                },
-                bottomBar = {
-                    MainNavigationBar(
-                        selected = uiState.destination,
-                        onSelect = viewModel::selectDestination,
-                    )
-                },
-            ) { contentPadding ->
-                val screenKey = when {
-                    uiState.selectedCustomerId != null && uiState.selectedMembershipId != null -> "task-dial-${uiState.selectedTaskId}"
-                    uiState.selectedCustomerId != null -> "customer-${uiState.selectedCustomerId}"
-                    uiState.selectedTaskId != null -> "task-${uiState.selectedTaskId}"
-                    else -> "destination-${uiState.destination.name}"
-                }
-                val routeTarget = RouteContentState(screenKey, uiState)
-                val routeTransition = updateTransition(
-                    targetState = routeTarget,
-                    label = "mainRouteTransition",
-                )
-                routeTransition.AnimatedContent(
-                    contentKey = { it.key },
-                    transitionSpec = {
-                        val duration = 180
-                        val movesForward = targetState.navigationOrder >= initialState.navigationOrder
-                        val enterFrom = if (movesForward) 1 else -1
-                        val exitTo = -enterFrom
-                        (
-                            (slideInHorizontally(
-                                animationSpec = tween(duration, easing = FastOutSlowInEasing),
-                            ) { width -> width * enterFrom / 5 } + fadeIn(tween(duration))) togetherWith
-                                (slideOutHorizontally(
-                                    animationSpec = tween(duration, easing = FastOutSlowInEasing),
-                                ) { width -> width * exitTo / 14 } + fadeOut(tween(duration)))
-                            ).using(SizeTransform(clip = false))
+            val closeWorkbookDrag = if (dialWorkbook.content != null) {
+                Modifier.dialHorizontalDrag(
+                    key = panelPixels,
+                    onStart = { _, distance ->
+                        dialWorkbook.beginDrag()
+                        dialWorkbook.dragBy(distance, panelPixels)
+                        true
                     },
-                ) { route ->
-                    val routeState = route.uiState
-                    val routeIsTransitioning = routeTransition.currentState.key != routeTransition.targetState.key
-                    CompositionLocalProvider(
-                        LocalCardRouteMotion provides CardRouteMotion(
-                            routeKey = route.key,
-                            enabled = routeIsTransitioning,
-                            entering = route.key == routeTransition.targetState.key,
-                        ),
-                    ) {
-                        screenStateHolder.SaveableStateProvider(route.key) {
-                            when {
-                                routeState.selectedCustomerId != null -> CustomerDetailPage(
-                                    customer = routeState.customer,
-                                    tasks = routeState.customerTasks,
-                                    contactRecords = routeState.customerContactRecords,
-                                    recentTaskContacts = routeState.recentTaskContacts,
-                                    customResults = routeState.customResults,
-                                    routeActive = route.key == screenKey,
-                                    activeTask = routeState.task,
-                                    taskMembers = routeState.taskCustomers,
-                                    selectedMembershipId = routeState.selectedMembershipId,
-                                    preferredDialSim = routeState.preferredDialSim,
-                                    onPreferredDialSimChange = viewModel::setPreferredDialSim,
-                                    automaticDialEnabled = routeState.automaticDialEnabled,
-                                    automaticDialDelaySeconds = routeState.automaticDialDelaySeconds,
-                                    onEdit = viewModel::updateCustomer,
-                                    onDelete = viewModel::deleteCustomer,
-                                    onOpenTask = viewModel::openTask,
-                                    onOpenTaskCustomer = { customerId, membershipId ->
-                                        routeState.selectedTaskId?.let { taskId ->
-                                            viewModel.openCustomer(customerId, taskId, membershipId)
-                                        }
-                                    },
-                                    onSaveContact = viewModel::saveContact,
-                                    workbook = dialWorkbook,
-                                    onAutomaticDialEnabledChange = viewModel::setAutomaticDialEnabled,
-                                    onAutomaticDialDelayChange = viewModel::setAutomaticDialDelaySeconds,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(contentPadding),
+                    onMove = { dialWorkbook.dragBy(it, panelPixels) },
+                    onFinish = { velocity, released -> dialWorkbook.finishDrag(velocity, panelPixels, released) },
+                )
+            } else Modifier
+            Box(Modifier.fillMaxSize().then(closeWorkbookDrag)) {
+                dialWorkbook.content?.invoke(
+                    Modifier.width(panelWidth).fillMaxHeight().graphicsLayer {
+                        translationX = panelPixels * (dialWorkbook.progress - 1f)
+                    },
+                )
+                Scaffold(
+                    modifier = Modifier.fillMaxSize()
+                        .graphicsLayer { translationX = panelPixels * dialWorkbook.progress }
+                        .then(if (dialWorkbook.open) Modifier.clearAndSetSemantics {} else Modifier),
+                    containerColor = MaterialTheme.colorScheme.background,
+                    contentWindowInsets = WindowInsets.navigationBars,
+                    topBar = {
+                        TopAppBar(
+                            title = {
+                                Text(
+                                    text = uiState.customer?.name
+                                        ?: uiState.task?.title
+                                        ?: uiState.destination.title,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
-
-                                routeState.selectedTaskId != null -> {
-                                    val taskId = routeState.selectedTaskId
-                                    TaskDetailPage(
-                                        task = routeState.task,
-                                        members = routeState.taskCustomers,
-                                        allCustomers = routeState.allCustomers,
-                                        progress = routeState.taskProgress,
-                                        onCreateCustomer = { name, phone ->
-                                            viewModel.addNewCustomerToTask(taskId, name, phone)
-                                        },
-                                        onAddExistingCustomer = { customerId ->
-                                            viewModel.addExistingCustomerToTask(taskId, customerId)
-                                        },
-                                        onOpenCustomer = { customerId, membershipId ->
-                                            viewModel.openCustomer(customerId, taskId, membershipId)
-                                        },
-                                        onContinueTask = { customerId, membershipId ->
-                                            viewModel.openCustomer(customerId, taskId, membershipId)
-                                        },
-                                        onRemoveCustomer = { customerId ->
-                                            viewModel.removeCustomerFromTask(taskId, customerId)
-                                        },
-                                        onRenameTask = viewModel::renameTask,
-                                        onDeleteTask = viewModel::deleteTask,
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .padding(contentPadding),
+                            },
+                            navigationIcon = {
+                                IconButton(
+                                    onClick = {
+                                        if (hasDetailRoute) viewModel.navigateBack() else openDrawer()
+                                    },
+                                    modifier = Modifier.size(48.dp),
+                                ) {
+                                    Icon(
+                                        painter = painterResource(
+                                            if (hasDetailRoute) R.drawable.ic_arrow_back else R.drawable.ic_menu,
+                                        ),
+                                        contentDescription = if (hasDetailRoute) "返回" else "打开侧边菜单",
+                                        tint = MaterialTheme.colorScheme.onSurface,
                                     )
                                 }
-
-                                else -> when (routeState.destination) {
-                                    MainDestination.TASKS -> TasksPage(
-                                        tasks = routeState.tasks,
-                                        onCreateTask = viewModel::createTask,
-                                        onImportClick = { viewModel.selectDestination(MainDestination.IMPORT) },
+                            },
+                            colors = TopAppBarDefaults.topAppBarColors(
+                                containerColor = MaterialTheme.colorScheme.background,
+                                scrolledContainerColor = MaterialTheme.colorScheme.background,
+                            ),
+                        )
+                    },
+                    bottomBar = {
+                        MainNavigationBar(
+                            selected = uiState.destination,
+                            onSelect = viewModel::selectDestination,
+                        )
+                    },
+                ) { contentPadding ->
+                    val screenKey = when {
+                        uiState.selectedCustomerId != null && uiState.selectedMembershipId != null -> "task-dial-${uiState.selectedTaskId}"
+                        uiState.selectedCustomerId != null -> "customer-${uiState.selectedCustomerId}"
+                        uiState.selectedTaskId != null -> "task-${uiState.selectedTaskId}"
+                        else -> "destination-${uiState.destination.name}"
+                    }
+                    val routeTarget = RouteContentState(screenKey, uiState)
+                    val routeTransition = updateTransition(
+                        targetState = routeTarget,
+                        label = "mainRouteTransition",
+                    )
+                    routeTransition.AnimatedContent(
+                        contentKey = { it.key },
+                        transitionSpec = {
+                            val duration = 180
+                            val movesForward = targetState.navigationOrder >= initialState.navigationOrder
+                            val enterFrom = if (movesForward) 1 else -1
+                            val exitTo = -enterFrom
+                            (
+                                (slideInHorizontally(
+                                    animationSpec = tween(duration, easing = FastOutSlowInEasing),
+                                ) { width -> width * enterFrom / 5 } + fadeIn(tween(duration))) togetherWith
+                                    (slideOutHorizontally(
+                                        animationSpec = tween(duration, easing = FastOutSlowInEasing),
+                                    ) { width -> width * exitTo / 14 } + fadeOut(tween(duration)))
+                                ).using(SizeTransform(clip = false))
+                        },
+                    ) { route ->
+                        val routeState = route.uiState
+                        val routeIsTransitioning = routeTransition.currentState.key != routeTransition.targetState.key
+                        CompositionLocalProvider(
+                            LocalCardRouteMotion provides CardRouteMotion(
+                                routeKey = route.key,
+                                enabled = routeIsTransitioning,
+                                entering = route.key == routeTransition.targetState.key,
+                            ),
+                        ) {
+                            screenStateHolder.SaveableStateProvider(route.key) {
+                                when {
+                                    routeState.selectedCustomerId != null -> CustomerDetailPage(
+                                        customer = routeState.customer,
+                                        tasks = routeState.customerTasks,
+                                        contactRecords = routeState.customerContactRecords,
+                                        recentTaskContacts = routeState.recentTaskContacts,
+                                        customResults = routeState.customResults,
+                                        routeActive = route.key == screenKey,
+                                        activeTask = routeState.task,
+                                        taskMembers = routeState.taskCustomers,
+                                        selectedMembershipId = routeState.selectedMembershipId,
+                                        preferredDialSim = routeState.preferredDialSim,
+                                        onPreferredDialSimChange = viewModel::setPreferredDialSim,
+                                        automaticDialEnabled = routeState.automaticDialEnabled,
+                                        automaticDialDelaySeconds = routeState.automaticDialDelaySeconds,
+                                        onEdit = viewModel::updateCustomer,
+                                        onDelete = viewModel::deleteCustomer,
                                         onOpenTask = viewModel::openTask,
-                                        onContinueTask = viewModel::continueTask,
-                                        onRenameTask = viewModel::renameTask,
-                                        onDeleteTask = viewModel::deleteTask,
+                                        onOpenTaskCustomer = { customerId, membershipId ->
+                                            routeState.selectedTaskId?.let { taskId ->
+                                                viewModel.openCustomer(customerId, taskId, membershipId)
+                                            }
+                                        },
+                                        onSaveContact = viewModel::saveContact,
+                                        workbook = dialWorkbook,
+                                        workbookWidth = panelPixels,
+                                        onAutomaticDialEnabledChange = viewModel::setAutomaticDialEnabled,
+                                        onAutomaticDialDelayChange = viewModel::setAutomaticDialDelaySeconds,
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .padding(contentPadding),
                                     )
 
-                                    MainDestination.IMPORT -> ImportListPage(
-                                        state = routeState,
-                                        onAddImages = viewModel::addImportImages,
-                                        onAddTabularFile = viewModel::importTabularFile,
-                                        onUpdateTitle = viewModel::updateImportTitle,
-                                        onAddManualRow = viewModel::addManualImportRow,
-                                        onUpdateRow = viewModel::updateImportRow,
-                                        onDeleteRow = viewModel::deleteImportRow,
-                                        onRetryImage = viewModel::retryImportImage,
-                                        onApplyFieldMapping = viewModel::applyImportFieldMapping,
-                                        onApplyFileFieldMapping = viewModel::applyImportFileFieldMapping,
-                                        onDiscardDraft = viewModel::discardImportDraft,
-                                        onCommitDraft = viewModel::commitImportDraft,
-                                        onDismissMessage = viewModel::dismissImportMessage,
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .padding(contentPadding),
-                                    )
+                                    routeState.selectedTaskId != null -> {
+                                        val taskId = routeState.selectedTaskId
+                                        TaskDetailPage(
+                                            task = routeState.task,
+                                            members = routeState.taskCustomers,
+                                            allCustomers = routeState.allCustomers,
+                                            progress = routeState.taskProgress,
+                                            onCreateCustomer = { name, phone ->
+                                                viewModel.addNewCustomerToTask(taskId, name, phone)
+                                            },
+                                            onAddExistingCustomer = { customerId ->
+                                                viewModel.addExistingCustomerToTask(taskId, customerId)
+                                            },
+                                            onOpenCustomer = { customerId, membershipId ->
+                                                viewModel.openCustomer(customerId, taskId, membershipId)
+                                            },
+                                            onContinueTask = { customerId, membershipId ->
+                                                viewModel.openCustomer(customerId, taskId, membershipId)
+                                            },
+                                            onRemoveCustomer = { customerId ->
+                                                viewModel.removeCustomerFromTask(taskId, customerId)
+                                            },
+                                            onRenameTask = viewModel::renameTask,
+                                            onDeleteTask = viewModel::deleteTask,
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(contentPadding),
+                                        )
+                                    }
 
-                                    MainDestination.LEADS -> LeadsPage(
-                                        leads = routeState.leads,
-                                        query = routeState.leadQuery,
-                                        statusFilter = routeState.leadStatusFilter,
-                                        onQueryChange = viewModel::setLeadQuery,
-                                        onStatusFilter = viewModel::setLeadStatusFilter,
-                                        onAddCustomer = viewModel::createCustomer,
-                                        onOpenCustomer = viewModel::openCustomer,
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .padding(contentPadding),
-                                    )
+                                    else -> when (routeState.destination) {
+                                        MainDestination.TASKS -> TasksPage(
+                                            tasks = routeState.tasks,
+                                            onCreateTask = viewModel::createTask,
+                                            onImportClick = { viewModel.selectDestination(MainDestination.IMPORT) },
+                                            onOpenTask = viewModel::openTask,
+                                            onContinueTask = viewModel::continueTask,
+                                            onRenameTask = viewModel::renameTask,
+                                            onDeleteTask = viewModel::deleteTask,
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(contentPadding),
+                                        )
+
+                                        MainDestination.IMPORT -> ImportListPage(
+                                            state = routeState,
+                                            onAddImages = viewModel::addImportImages,
+                                            onAddTabularFile = viewModel::importTabularFile,
+                                            onUpdateTitle = viewModel::updateImportTitle,
+                                            onAddManualRow = viewModel::addManualImportRow,
+                                            onUpdateRow = viewModel::updateImportRow,
+                                            onDeleteRow = viewModel::deleteImportRow,
+                                            onRetryImage = viewModel::retryImportImage,
+                                            onApplyFieldMapping = viewModel::applyImportFieldMapping,
+                                            onApplyFileFieldMapping = viewModel::applyImportFileFieldMapping,
+                                            onDiscardDraft = viewModel::discardImportDraft,
+                                            onCommitDraft = viewModel::commitImportDraft,
+                                            onDismissMessage = viewModel::dismissImportMessage,
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(contentPadding),
+                                        )
+
+                                        MainDestination.LEADS -> LeadsPage(
+                                            leads = routeState.leads,
+                                            query = routeState.leadQuery,
+                                            statusFilter = routeState.leadStatusFilter,
+                                            onQueryChange = viewModel::setLeadQuery,
+                                            onStatusFilter = viewModel::setLeadStatusFilter,
+                                            onAddCustomer = viewModel::createCustomer,
+                                            onOpenCustomer = viewModel::openCustomer,
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(contentPadding),
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            if (dialWorkbook.content != null) {
-                Box(
-                    Modifier.matchParentSize()
-                        .graphicsLayer { translationX = panelPixels * workbookProgress }
-                        .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.25f))
-                        .clickable(onClickLabel = "关闭客户名单", onClick = dialWorkbook::close),
-                )
+                if (dialWorkbook.content != null) {
+                    val scrim = MaterialTheme.colorScheme.scrim.copy(alpha = 0.25f)
+                    Box(
+                        Modifier.matchParentSize()
+                            .graphicsLayer {
+                                translationX = panelPixels * dialWorkbook.progress
+                                alpha = dialWorkbook.progress
+                            }
+                            .background(scrim)
+                            .clickable(onClickLabel = "关闭客户名单", onClick = dialWorkbook::close),
+                    )
+                }
             }
         }
     }

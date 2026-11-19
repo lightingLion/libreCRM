@@ -5,21 +5,11 @@ import kotlin.math.pow
 import kotlin.math.sign
 
 internal object WorkbookDragMotion {
-    const val scrollThreshold = 48f
+    const val scrollThreshold = 96f
     const val maximumScrollSpeed = 780f
-    const val maximumAcceleration = 30_000f
     const val maximumScale = 0.045f
-    private const val stiffness = 320f
-    private const val damping = 36f
-    private const val catchUpDistance = 24f
     private const val scrollAcceleration = 3_200f
     private const val responseRadius = 72f
-
-    fun acceleration(error: Float, velocity: Float): Float {
-        val excess = (abs(error) - catchUpDistance).coerceAtLeast(0f)
-        val force = stiffness * (error + excess * error.sign) - damping * velocity
-        return force.coerceIn(-maximumAcceleration, maximumAcceleration)
-    }
 
     fun scrollTarget(displacement: Float): Float {
         val range = ((abs(displacement) - scrollThreshold) / 160f).coerceIn(0f, 1f)
@@ -36,3 +26,6 @@ internal object WorkbookDragMotion {
         return 1f - t * t * t * (t * (6f * t - 15f) + 10f)
     }
 }
+
+internal fun projectedDragPosition(position: Float, velocity: Float, limit: Float): Float =
+    position + (velocity * 0.14f).coerceIn(-limit, limit)

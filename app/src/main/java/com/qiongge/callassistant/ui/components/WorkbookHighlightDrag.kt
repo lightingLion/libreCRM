@@ -10,28 +10,58 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.unit.Dp
 import com.qiongge.callassistant.ui.theme.AppMotion
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 
 internal class WorkbookHighlightDrag {
     var center by mutableFloatStateOf(Float.NaN)
     var height by mutableFloatStateOf(0f)
-    var stretch by mutableFloatStateOf(0f)
     var emphasis by mutableFloatStateOf(0f)
-    var recenter: Job? = null
+    var recenter by mutableStateOf<Job?>(null)
+    var headerHeight = 0
+    private var settling: Job? = null
+
+    fun catchHighlight() {
+        settling?.cancel()
+        settling = null
+    }
+
+    fun glideTo(scroll: LazyListState, scope: CoroutineScope, key: Long, fromKey: Long? = null) {
+        catchHighlight()
+        val layout = scroll.layoutInfo
+        val from = layout.visibleItemsInfo.firstOrNull { it.key == fromKey }
+        val initialCenter = center.takeIf(Float::isFinite) ?: from?.centerIn(layout) ?: return
+        val initialHeight = if (center.isFinite()) height else from?.size?.toFloat() ?: return
+        center = initialCenter
+        height = initialHeight
+        settling = scope.launch {
+            animate(0f, 1f, animationSpec = AppMotion.workbookCentering()) { value, _ ->
+                val fraction = value.coerceIn(0f, 1f)
+                val live = scroll.layoutInfo
+                val item = live.visibleItemsInfo.firstOrNull { it.key == key }
+                if (item != null) {
+                    center = initialCenter + (item.centerIn(live) - initialCenter) * fraction
+                    height = initialHeight + (item.size - initialHeight) * fraction
+                }
+                emphasis = 1f - fraction
+            }
+            center = Float.NaN
+            emphasis = 0f
+        }
+    }
 }
 
 internal fun LazyListItemInfo.centerIn(layout: LazyListLayoutInfo): Float =
@@ -46,36 +76,53 @@ internal fun workbookDragInput(
     horizontalPadding: Dp,
     passiveTop: () -> Float,
     onPick: (Long) -> Unit,
+    onDragStart: () -> Unit,
 ): Modifier {
     val scope = rememberCoroutineScope()
     val latestTop by rememberUpdatedState(passiveTop)
     val latestPick by rememberUpdatedState(onPick)
-    val settleSpec = remember { AppMotion.selection<Float>() }
-    return Modifier.pointerInput(scroll, selectedKey, enabled, horizontalPadding) {
-        var settling: Job? = null
+    val latestKey by rememberUpdatedState(selectedKey)
+    val collapse by rememberUpdatedState(onDragStart)
+    return Modifier.pointerInput(scroll, enabled, horizontalPadding) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             drag.recenter?.cancel()
             if (!enabled || down.isConsumed) return@awaitEachGesture
-            settling?.cancel()
-            drag.center = Float.NaN
+            val key = latestKey
             val layout = scroll.layoutInfo
-            val item = layout.visibleItemsInfo.firstOrNull { it.key == selectedKey } ?: return@awaitEachGesture
-            val height = item.size.toFloat()
+            val item = layout.visibleItemsInfo.firstOrNull { it.key == key } ?: return@awaitEachGesture
+            val height = if (drag.center.isFinite()) drag.height else item.size.toFloat()
             if (height <= 0f) return@awaitEachGesture
             val inset = horizontalPadding.toPx()
             val itemCenter = item.centerIn(layout)
-            val visualCenter = latestTop().takeIf(Float::isFinite)
+            val visualCenter = drag.center.takeIf(Float::isFinite) ?: latestTop().takeIf(Float::isFinite)
                 ?.plus(height / 2)?.coerceIn(itemCenter - 12 * density, itemCenter + 12 * density) ?: itemCenter
             if (down.position.x !in inset..(size.width - inset) ||
                 abs(down.position.y - visualCenter) > height / 2
             ) return@awaitEachGesture
 
             val grabOffset = visualCenter - down.position.y
+            val tracker = VelocityTracker().apply { addPosition(down.uptimeMillis, down.position) }
+            var lastMove = down.uptimeMillis
+            var speed = 0f
+            var candidate = key
             var displacement = 0f
             var acquired = false
             var released = false
             var tracking: Job? = null
+            var shrinking: Job? = null
+            val viewportHeight = size.height.toFloat()
+            val pxPerDp = density
+            fun choose(position: Float): Long {
+                val live = scroll.layoutInfo
+                val closest = live.visibleItemsInfo.minByOrNull { abs(position - it.centerIn(live)) } ?: return candidate
+                val previous = live.visibleItemsInfo.firstOrNull { it.key == candidate }
+                if (previous != null && previous.key != closest.key) {
+                    val advantage = abs(position - previous.centerIn(live)) - abs(position - closest.centerIn(live))
+                    if (advantage < 12f * pxPerDp) return candidate
+                }
+                return closest.key as Long
+            }
             try {
                 while (true) {
                     val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
@@ -84,88 +131,65 @@ internal fun workbookDragInput(
                         if (acquired) {
                             change.consume()
                             released = true
+                            if (change.uptimeMillis - lastMove <= 80L) speed = tracker.calculateVelocity().y
                         }
                         break
                     }
                     displacement = change.position.y - down.position.y
+                    tracker.addPosition(change.uptimeMillis, change.position)
+                    lastMove = change.uptimeMillis
                     if (!acquired) {
                         val horizontal = abs(change.position.x - down.position.x)
                         if (horizontal > viewConfiguration.touchSlop && horizontal > abs(displacement)) break
                         if (abs(displacement) < viewConfiguration.touchSlop) continue
                         acquired = true
+                        drag.catchHighlight()
                         drag.height = height
-                        drag.center = visualCenter
-                        drag.stretch = 0f
                         drag.emphasis = 1f
-                        val viewportHeight = size.height.toFloat()
-                        val pxPerDp = density
-                        val padding = minOf(height / 2, viewportHeight / 2)
+                        collapse()
+                        val headerHeight = drag.headerHeight.toFloat()
+                        if (headerHeight > 0f && height > headerHeight) {
+                            shrinking = scope.launch {
+                                animate(height, headerHeight, animationSpec = AppMotion.selection()) { value, _ ->
+                                    drag.height = value
+                                }
+                            }
+                        }
                         tracking = scope.launch {
                             scroll.scroll(MutatePriority.UserInput) {
-                                var velocity = 0f
                                 var autoSpeed = 0f
                                 var lastFrame = withFrameNanos { it }
                                 while (true) {
                                     val frame = withFrameNanos { it }
                                     val dt = ((frame - lastFrame) / 1_000_000_000f).coerceIn(0f, 0.032f)
                                     lastFrame = frame
-                                    val target = (down.position.y + displacement + grabOffset)
-                                        .coerceIn(padding, viewportHeight - padding)
-                                    if (coroutineContext[MotionDurationScale]?.scaleFactor == 0f) {
-                                        drag.center = target
-                                        drag.stretch = 0f
-                                    } else {
-                                        val step = dt / 4
-                                        var center = drag.center
-                                        repeat(4) {
-                                            velocity += WorkbookDragMotion.acceleration((target - center) / pxPerDp, velocity) * step
-                                            val advanced = center + velocity * pxPerDp * step
-                                            center = advanced.coerceIn(padding, viewportHeight - padding)
-                                            if (advanced != center) velocity = 0f
-                                        }
-                                        drag.center = center
-                                        drag.stretch = (velocity / 1_100f).coerceIn(-1f, 1f) * 0.08f
-                                    }
                                     val requested = WorkbookDragMotion.scrollTarget(displacement / pxPerDp)
                                     val canMove = if (requested < 0) scroll.canScrollBackward else scroll.canScrollForward
                                     autoSpeed = WorkbookDragMotion.scrollSpeed(autoSpeed, if (canMove) requested else 0f, dt)
                                     if ((autoSpeed > 0f && scroll.canScrollForward) || (autoSpeed < 0f && scroll.canScrollBackward)) {
                                         scrollBy(autoSpeed * pxPerDp * dt)
+                                        candidate = choose(drag.center)
                                     } else autoSpeed = 0f
                                 }
                             }
                         }
                     }
+                    drag.center = (change.position.y + grabOffset).coerceIn(0f, viewportHeight)
+                    candidate = choose(drag.center)
                     change.consume()
                 }
             } finally {
                 tracking?.cancel()
+                shrinking?.cancel()
                 if (acquired) {
-                    val live = scroll.layoutInfo
-                    val target = if (released) {
-                        live.visibleItemsInfo.minByOrNull { abs(drag.center - it.centerIn(live)) }
-                    } else live.visibleItemsInfo.firstOrNull { it.key == selectedKey }
-                    if (target == null) {
+                    val targetKey = if (released) {
+                        choose(projectedDragPosition(drag.center, speed, 28f * pxPerDp))
+                    } else key
+                    if (scroll.layoutInfo.visibleItemsInfo.none { it.key == targetKey }) {
                         drag.center = Float.NaN
                     } else {
-                        val key = target.key as Long
-                        val targetCenter = target.centerIn(live)
-                        settling = scope.launch {
-                            val initialCenter = drag.center
-                            val initialHeight = drag.height
-                            val initialStretch = drag.stretch
-                            try {
-                                animate(0f, 1f, animationSpec = settleSpec) { fraction, _ ->
-                                    drag.center = initialCenter + (targetCenter - initialCenter) * fraction
-                                    drag.height = initialHeight + (target.size - initialHeight) * fraction
-                                    drag.stretch = initialStretch * (1f - fraction)
-                                    drag.emphasis = 1f - fraction
-                                }
-                                if (released && key != selectedKey) latestPick(key)
-                            } finally {
-                                drag.center = Float.NaN
-                            }
-                        }
+                        drag.glideTo(scroll, scope, targetKey)
+                        if (released) latestPick(targetKey)
                     }
                 }
             }

@@ -13,12 +13,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
 import android.telephony.TelephonyManager
+import androidx.compose.animation.core.animate
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
-import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -31,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -64,8 +64,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -74,7 +76,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -89,6 +90,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.role
@@ -99,6 +101,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
@@ -128,7 +131,9 @@ import com.qiongge.callassistant.ui.theme.G2CornerShape
 import com.qiongge.callassistant.ui.theme.DialNumberTypography
 import com.qiongge.callassistant.ui.theme.NumberTypography
 import com.qiongge.callassistant.ui.components.WorkbookCustomerRow
+import com.qiongge.callassistant.ui.components.projectedDragPosition
 import com.qiongge.callassistant.ui.theme.AppSpacing
+import com.qiongge.callassistant.ui.theme.AppMotion
 
 @Composable
 fun TasksPage(
@@ -660,6 +665,7 @@ internal fun CustomerDetailPage(
     onAutomaticDialDelayChange: (Int) -> Unit,
     onSaveContact: suspend (Long, ContactStatus, String?, String, Long?, Boolean) -> Boolean,
     workbook: DialWorkbookPushState,
+    workbookWidth: Float,
     modifier: Modifier = Modifier,
 ) {
     var editingCustomer by remember(customer?.id) { mutableStateOf(false) }
@@ -680,7 +686,7 @@ internal fun CustomerDetailPage(
     val phoneDialing = remember(context) { PhoneDialing(context) }
     val lifecycleOwner = LocalLifecycleOwner.current
     val view = LocalView.current
-    val listState = rememberLazyListState()
+    val listState = key(customer?.id, selectedMembershipId) { rememberLazyListState() }
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val currentTaskIndex = taskMembers.indexOfFirst { it.membershipId == selectedMembershipId }
@@ -860,70 +866,260 @@ internal fun CustomerDetailPage(
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val workbookMembers by rememberUpdatedState(taskMembers)
-    val workbookIndex by rememberUpdatedState(currentTaskIndex)
-    val workbookSaving by rememberUpdatedState(saving)
-    val jumpToCustomer by rememberUpdatedState(onOpenTaskCustomer)
-    val saveAndJump by rememberUpdatedState<suspend (TaskCustomerRow) -> Boolean> { saveDraft(it) }
-    LaunchedEffect(customer?.id, selectedMembershipId) {
-        if (customer != null) listState.scrollToItem(0)
+    var advanceProgress by remember(selectedMembershipId) { mutableFloatStateOf(0f) }
+    var incomingCustomer by remember(selectedMembershipId) { mutableStateOf<TaskCustomerRow?>(null) }
+    var switchDirection by remember(selectedMembershipId) { mutableFloatStateOf(1f) }
+    var workbookTargetIndex by remember(selectedMembershipId) { mutableIntStateOf(-1) }
+    var advanceAnimation by remember(selectedMembershipId) { mutableStateOf<Job?>(null) }
+    var advancing by remember { mutableStateOf(false) }
+    var pendingRevealId by remember { mutableStateOf<Long?>(null) }
+    var revealProgress by remember(selectedMembershipId) {
+        mutableFloatStateOf(if (pendingRevealId != null && pendingRevealId == selectedMembershipId) 0f else 1f)
+    }
+    val workbookIndex by rememberUpdatedState(workbookTargetIndex.takeIf { it >= 0 } ?: currentTaskIndex)
+    val workbookSaving by rememberUpdatedState(saving || advancing || workbookTargetIndex >= 0)
+    val density = LocalDensity.current
+    LaunchedEffect(selectedMembershipId, customer?.id) {
+        if (customer != null && pendingRevealId != null && pendingRevealId == selectedMembershipId) {
+            pendingRevealId = null
+            animate(0f, 1f, animationSpec = dialDetailArrival) { value, _ ->
+                revealProgress = value.coerceIn(0f, 1f)
+            }
+        }
     }
 
-    fun openWorkbook(): Boolean {
-        if (!routeActive || saving || currentTaskIndex < 0 || workbook.open) return false
+    fun settleCustomer(
+        target: TaskCustomerRow?,
+        velocity: Float = 0f,
+        save: Boolean = true,
+        fromWorkbook: Boolean = false,
+    ) {
+        if (!routeActive || saving || advancing || workbookTargetIndex >= 0) return
+        if (target != null && target.membershipId == selectedMembershipId) return
+        if (target != null) {
+            val targetIndex = taskMembers.indexOfFirst { it.membershipId == target.membershipId }
+            if (targetIndex < 0) return
+            switchDirection = dialSwitchDirection(currentTaskIndex, targetIndex)
+            incomingCustomer = target
+            if (fromWorkbook) workbookTargetIndex = targetIndex
+        }
+        advanceAnimation?.cancel()
+        advanceAnimation = scope.launch {
+            if (target != null) {
+                stopAutomaticDial()
+                focusManager.clearFocus()
+                keyboard?.hide()
+            }
+            animate(
+                advanceProgress, if (target != null) 1f else 0f,
+                initialVelocity = velocity.coerceIn(-4f, 4f),
+                animationSpec = AppMotion.selection(),
+            ) { value, _ -> advanceProgress = value.coerceIn(0f, 1f) }
+            if (target != null) {
+                advancing = true
+                pendingRevealId = target.membershipId
+                try {
+                    if (!save) {
+                        onOpenTaskCustomer(target.customer.id, target.membershipId)
+                        return@launch
+                    }
+                    if (saveDraft(target)) return@launch
+                    pendingRevealId = null
+                    workbookTargetIndex = -1
+                    animate(advanceProgress, 0f, animationSpec = AppMotion.selection()) { value, _ ->
+                        advanceProgress = value.coerceIn(0f, 1f)
+                    }
+                } finally {
+                    advancing = false
+                }
+            }
+            incomingCustomer = null
+        }
+    }
+
+    val selectFromWorkbook by rememberUpdatedState<(TaskCustomerRow, Boolean) -> Unit> { member, save ->
+        settleCustomer(member, save = save, fromWorkbook = true)
+    }
+
+    fun openWorkbook(interactive: Boolean = false): Boolean {
+        if (!routeActive || saving || advancing || incomingCustomer != null || currentTaskIndex < 0 || workbook.open) return false
         stopAutomaticDial()
         focusManager.clearFocus()
         keyboard?.hide()
-        workbook.show { panelModifier ->
+        workbook.show(interactive) { panelModifier ->
             DialWorkbookPanel(
                 members = workbookMembers,
                 currentIndex = workbookIndex,
                 saving = workbookSaving,
                 onDismiss = workbook::close,
-                onOpen = { member ->
-                    workbook.close()
-                    jumpToCustomer(member.customer.id, member.membershipId)
-                },
-                onSaveAndOpen = { member ->
-                    scope.launch { if (saveAndJump(member)) workbook.close() }
-                },
+                onOpen = { selectFromWorkbook(it, false) },
+                onSaveAndOpen = { selectFromWorkbook(it, true) },
                 modifier = panelModifier,
             )
         }
         return true
     }
 
-    val onOpenWorkbook by rememberUpdatedState { openWorkbook() }
+    val startWorkbookDrag by rememberUpdatedState { openWorkbook(interactive = true) }
+    val finishNextDrag by rememberUpdatedState<(Boolean, Float) -> Unit> { commit, speed ->
+        settleCustomer(nextMember.takeIf { commit }, velocity = speed)
+    }
+    val latestNextMember by rememberUpdatedState(nextMember)
     val swipeModifier = if (routeActive && customer != null && currentTaskIndex >= 0 &&
-        !saving && !workbook.open
+        !saving && !advancing && workbookTargetIndex < 0 && !workbook.open
     ) {
-        Modifier.pointerInput(selectedMembershipId) {
-            val edgeInset = 24.dp.toPx()
-            val threshold = 64.dp.toPx()
-            awaitEachGesture {
-                val down = awaitFirstDown(requireUnconsumed = false)
-                if (down.position.x < edgeInset || down.position.x > size.width - edgeInset) {
-                    return@awaitEachGesture
+        var draggingWorkbook = false
+        var pageWidth = 0f
+        var startingAdvance = 0f
+        Modifier.dialHorizontalDrag(
+            key = selectedMembershipId to workbookWidth,
+            avoidSystemEdge = true,
+            onStart = { width, distance ->
+                pageWidth = width
+                draggingWorkbook = distance > 0f && incomingCustomer == null
+                if (draggingWorkbook) {
+                    startWorkbookDrag().also { if (it) workbook.dragBy(distance, workbookWidth) }
+                } else {
+                    val target = latestNextMember
+                    if (target == null) false else {
+                        advanceAnimation?.cancel()
+                        startingAdvance = advanceProgress
+                        switchDirection = 1f
+                        incomingCustomer = target
+                        advanceProgress = (startingAdvance - distance / width).coerceIn(0f, 1f)
+                        true
+                    }
                 }
-                var distance = 0f
-                val dragStart = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
-                    change.consume()
-                    distance = overSlop
-                } ?: return@awaitEachGesture
-                val completed = horizontalDrag(dragStart.id) { change ->
-                    distance += change.position.x - change.previousPosition.x
-                    change.consume()
+            },
+            onMove = { distance ->
+                if (draggingWorkbook) workbook.dragBy(distance, workbookWidth)
+                else advanceProgress = (startingAdvance - distance / pageWidth).coerceIn(0f, 1f)
+            },
+            onFinish = { velocity, released ->
+                if (draggingWorkbook) {
+                    workbook.finishDrag(velocity, workbookWidth, released)
+                } else {
+                    val speed = -velocity / pageWidth
+                    val threshold = (with(density) { 72.dp.toPx() } / pageWidth).coerceIn(0.15f, 0.35f)
+                    val projected = projectedDragPosition(advanceProgress, speed, 0.18f)
+                    finishNextDrag(released && projected >= threshold, if (released) speed else 0f)
                 }
-                if (completed && distance <= -threshold) onOpenWorkbook()
-            }
-        }
-    } else {
-        Modifier
+            },
+        )
+    } else Modifier
+
+    fun detailsMotion(order: Int): Modifier = Modifier.dialDetailMotion {
+        dialDetailVisibility(advanceProgress, revealProgress, order)
     }
 
-    Box(modifier = modifier) {
+    @Composable
+    fun DialCard(
+        currentCustomer: CustomerEntity,
+        member: TaskCustomerRow?,
+        hasFollowingCustomer: Boolean,
+        preview: Boolean,
+        modifier: Modifier = Modifier,
+    ) {
+        RaisedCard(
+            modifier = modifier.fillMaxWidth(),
+            motionProfile = CardMotionProfile.Large,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(currentCustomer.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
+                    Box {
+                        IconButton(
+                            enabled = preview || !advancing,
+                            onClick = { if (!preview && incomingCustomer == null) showCustomerMenu = true },
+                        ) {
+                            Icon(painterResource(R.drawable.ic_more), contentDescription = "客户更多操作")
+                        }
+                        DropdownMenu(expanded = !preview && showCustomerMenu, onDismissRequest = { showCustomerMenu = false }) {
+                            if (member != null) {
+                                DropdownMenuItem(
+                                    text = { Text("自动拨号设置") },
+                                    onClick = {
+                                        showCustomerMenu = false
+                                        stopAutomaticDial()
+                                        showDialSettings = true
+                                    },
+                                )
+                            }
+                            DropdownMenuItem(text = { Text("编辑资料") }, onClick = { showCustomerMenu = false; editingCustomer = true })
+                            DropdownMenuItem(text = { Text("删除客户", color = MaterialTheme.colorScheme.error) }, onClick = { showCustomerMenu = false; confirmingDelete = true })
+                        }
+                    }
+                }
+                Text(
+                    currentCustomer.phone,
+                    style = DialNumberTypography,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                val address = listOfNotNull(member?.building, member?.room).joinToString(" · ")
+                if (address.isNotEmpty()) Text("房号  $address", style = MaterialTheme.typography.bodyMedium)
+                TextButton(
+                    enabled = preview || (!saving && !advancing),
+                    onClick = {
+                        if (!preview && incomingCustomer == null) {
+                            stopAutomaticDial()
+                            if (phoneDialing.hasPhoneStatePermission()) {
+                                dialSims = phoneDialing.availableSims()
+                                showSimPicker = true
+                            } else simPermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
+                        }
+                    },
+                ) {
+                    val label = if (preferredDialSim == null) "系统默认"
+                    else dialSims.firstOrNull { it.key == preferredDialSim }?.label ?: "SIM 不可用"
+                    Text("拨号卡 · $label", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                EditorialButton(
+                    label = "拨打当前客户",
+                    enabled = preview || (!saving && !advancing),
+                    onClick = {
+                        if (preview || incomingCustomer != null) return@EditorialButton
+                        try {
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
+                                launchCall(currentCustomer.phone, armNext = nextMember != null)
+                            } else callPermissionLauncher.launch(Manifest.permission.CALL_PHONE)
+                        } catch (_: ActivityNotFoundException) {
+                            scope.launch {
+                                snackbarHostState.showSnackbar("无法打开系统拨号应用。")
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "通话结束后返回应用，才能记录联系结果。自动拨号仅在开启后拨打任务下一位。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (activeTask != null && hasFollowingCustomer) {
+                    if (automaticDialEnabled) {
+                        Text("自动拨号已开启 · 间隔 ${automaticDialDelaySeconds} 秒", style = MaterialTheme.typography.bodyMedium)
+                        if (!preview && countdown > 0) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text("${countdown} 秒后拨打下一位", style = MaterialTheme.typography.bodyMedium)
+                                TextButton(onClick = ::stopAutomaticDial) { Text("取消") }
+                            }
+                        }
+                    } else {
+                        Text("自动拨号已关闭", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+
+    Box(modifier = modifier.clipToBounds().then(swipeModifier)) {
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().then(swipeModifier),
+            modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 20.dp, top = 16.dp, end = 20.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             overscrollEffect = rememberOverscrollEffect(),
@@ -939,139 +1135,34 @@ internal fun CustomerDetailPage(
                 }
             } else {
                 val currentCustomer = customer
-                item(key = "customer-detail") {
-                    RaisedCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        motionProfile = CardMotionProfile.Large,
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(currentCustomer.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
-                                Box {
-                                    IconButton(onClick = { showCustomerMenu = true }) {
-                                        Icon(painterResource(R.drawable.ic_more), contentDescription = "客户更多操作")
-                                    }
-                                    DropdownMenu(expanded = showCustomerMenu, onDismissRequest = { showCustomerMenu = false }) {
-                                        if (currentMember != null) {
-                                            DropdownMenuItem(
-                                                text = { Text("自动拨号设置") },
-                                                onClick = {
-                                                    showCustomerMenu = false
-                                                    stopAutomaticDial()
-                                                    showDialSettings = true
-                                                },
-                                            )
-                                        }
-                                        DropdownMenuItem(text = { Text("编辑资料") }, onClick = { showCustomerMenu = false; editingCustomer = true })
-                                        DropdownMenuItem(text = { Text("删除客户", color = MaterialTheme.colorScheme.error) }, onClick = { showCustomerMenu = false; confirmingDelete = true })
-                                    }
-                                }
-                            }
-                            Text(
-                                currentCustomer.phone,
-                                style = DialNumberTypography,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            val address = listOfNotNull(currentMember?.building, currentMember?.room).joinToString(" · ")
-                            if (address.isNotEmpty()) Text("房号  $address", style = MaterialTheme.typography.bodyMedium)
-                            TextButton(
-                                enabled = !saving,
-                                onClick = {
-                                    stopAutomaticDial()
-                                    if (phoneDialing.hasPhoneStatePermission()) {
-                                        dialSims = phoneDialing.availableSims()
-                                        showSimPicker = true
-                                    } else simPermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
-                                },
-                            ) {
-                                val label = if (preferredDialSim == null) "系统默认"
-                                else dialSims.firstOrNull { it.key == preferredDialSim }?.label ?: "SIM 不可用"
-                                Text("拨号卡 · $label", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
-                            EditorialButton(
-                                label = "拨打当前客户",
-                                enabled = !saving,
-                                onClick = {
-                                    try {
-                                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
-                                            launchCall(currentCustomer.phone, armNext = nextMember != null)
-                                        } else callPermissionLauncher.launch(Manifest.permission.CALL_PHONE)
-                                    } catch (_: ActivityNotFoundException) {
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar("无法打开系统拨号应用。")
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Text(
-                                "通话结束后返回应用，才能记录联系结果。自动拨号仅在开启后拨打任务下一位。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            if (activeTask != null && nextMember != null) {
-                                if (automaticDialEnabled) {
-                                    Text("自动拨号已开启 · 间隔 ${automaticDialDelaySeconds} 秒", style = MaterialTheme.typography.bodyMedium)
-                                    if (countdown > 0) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                        ) {
-                                            Text("${countdown} 秒后拨打下一位", style = MaterialTheme.typography.bodyMedium)
-                                            TextButton(onClick = ::stopAutomaticDial) { Text("取消") }
-                                        }
-                                    }
-                                } else {
-                                    Text("自动拨号已关闭", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (activeTask != null && currentTaskIndex >= 0) {
-                    item(key = "task-contact-position") {
-                        RaisedCard(
-                            modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {
+                item(key = "customer-detail-${currentCustomer.id}", contentType = "dial-card") {
+                    DialCard(
+                        currentCustomer, currentMember,
+                        hasFollowingCustomer = nextMember != null,
+                        preview = false,
+                        modifier = Modifier.graphicsLayer {
+                            // The frame includes the horizontal list insets. Leave those intact
+                            // so the preview and the real card land on identical coordinates.
+                            translationX = -switchDirection * advanceProgress * (size.width + 40.dp.toPx())
+                        }.semantics {
+                            if (currentTaskIndex >= 0 && routeActive && !saving) {
                                 customActions = buildList {
-                                    if (routeActive && !saving) {
-                                        add(CustomAccessibilityAction("打开客户名单") { openWorkbook() })
-                                    }
-                                    if (routeActive && !saving && nextMember != null) {
+                                    add(CustomAccessibilityAction("打开客户名单") { openWorkbook() })
+                                    if (nextMember != null) {
                                         add(CustomAccessibilityAction("保存并下一位") {
-                                            stopAutomaticDial()
-                                            scope.launch { saveDraft(nextMember) }
+                                            settleCustomer(nextMember)
                                             true
                                         })
                                     }
                                 }
-                            },
-                            motionProfile = CardMotionProfile.Medium,
-                        ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text(activeTask.title, style = MaterialTheme.typography.titleMedium)
-                                Text(
-                                    "第 ${currentTaskIndex + 1} 位，共 ${taskMembers.size} 位",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                TextButton(onClick = { openWorkbook() }, enabled = routeActive && !saving) {
-                                    Text("客户名单")
-                                }
-                                Text(
-                                    "左滑打开名单",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
                             }
-                        }
-                    }
+                        },
+                    )
                 }
 
                 item(key = "contact-result-editor") {
                     RaisedCard(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = detailsMotion(0).fillMaxWidth(),
                         motionProfile = CardMotionProfile.Large,
                     ) {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1111,10 +1202,7 @@ internal fun CustomerDetailPage(
                             if (nextMember != null) {
                                 TextButton(
                                     enabled = !saving,
-                                    onClick = {
-                                        stopAutomaticDial()
-                                        scope.launch { saveDraft(nextMember) }
-                                    },
+                                    onClick = { settleCustomer(nextMember) },
                                 ) { Text("保存并下一位") }
                             }
                             EditorialButton(
@@ -1132,16 +1220,20 @@ internal fun CustomerDetailPage(
                 }
 
                 item(key = "contact-history-title") {
-                    Text(if (activeTask != null) "名单最近联系记录" else "联系记录", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (activeTask != null) "名单最近联系记录" else "联系记录",
+                        modifier = detailsMotion(1),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
                 }
                 if (activeTask != null && recentTaskContacts.isNotEmpty()) {
                     items(recentTaskContacts, key = { "task-record-${it.record.id}" }) { entry ->
-                        ContactRecordCard(entry.record, "${entry.customerName} · ${entry.phone}")
+                        ContactRecordCard(entry.record, "${entry.customerName} · ${entry.phone}", detailsMotion(1))
                     }
                 } else if (contactRecords.isEmpty() || activeTask != null) {
                     item(key = "contact-history-empty") {
                         RaisedCard(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = detailsMotion(1).fillMaxWidth(),
                             motionProfile = CardMotionProfile.Compact,
                         ) {
                             Text(
@@ -1153,17 +1245,17 @@ internal fun CustomerDetailPage(
                     }
                 } else {
                     items(contactRecords, key = { "record-${it.id}" }) { record ->
-                        ContactRecordCard(record = record)
+                        ContactRecordCard(record = record, modifier = detailsMotion(1))
                     }
                 }
 
                 item(key = "customer-tasks-label") {
-                    Text("所属任务名单", style = MaterialTheme.typography.titleMedium)
+                    Text("所属任务名单", modifier = detailsMotion(2), style = MaterialTheme.typography.titleMedium)
                 }
                 if (tasks.isEmpty()) {
                     item(key = "customer-no-tasks") {
                         RaisedCard(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = detailsMotion(2).fillMaxWidth(),
                             motionProfile = CardMotionProfile.Medium,
                         ) {
                             Text(
@@ -1176,7 +1268,7 @@ internal fun CustomerDetailPage(
                 } else {
                     items(tasks, key = { "customer-task-${it.id}" }) { task ->
                         RaisedCard(
-                            modifier = Modifier
+                            modifier = detailsMotion(2)
                                 .fillMaxWidth()
                                 .clickable { onOpenTask(task.id) },
                             contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp),
@@ -1196,6 +1288,23 @@ internal fun CustomerDetailPage(
             }
         }
 
+        incomingCustomer?.let { incoming ->
+            val incomingIndex = taskMembers.indexOfFirst { it.membershipId == incoming.membershipId }
+            Box(
+                Modifier.matchParentSize()
+                    .graphicsLayer { translationX = switchDirection * (1f - advanceProgress) * size.width }
+                    .clearAndSetSemantics {}
+                    .padding(start = 20.dp, top = 16.dp, end = 20.dp),
+            ) {
+                DialCard(
+                    incoming.customer,
+                    incoming,
+                    hasFollowingCustomer = incomingIndex in 0 until taskMembers.lastIndex,
+                    preview = true,
+                    modifier = Modifier.wrapContentHeight(align = Alignment.Top, unbounded = true),
+                )
+            }
+        }
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.BottomCenter),
@@ -1371,9 +1480,13 @@ private fun ContactStatusChoice(
 }
 
 @Composable
-private fun ContactRecordCard(record: CallRecordEntity, customerLabel: String? = null) {
+private fun ContactRecordCard(
+    record: CallRecordEntity,
+    customerLabel: String? = null,
+    modifier: Modifier = Modifier,
+) {
     RaisedCard(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
         motionProfile = CardMotionProfile.Compact,
     ) {
